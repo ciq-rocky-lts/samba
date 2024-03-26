@@ -1,0 +1,597 @@
+From 1b14752bebbdecbb7c89c7fe03853bdf4dff6f64 Mon Sep 17 00:00:00 2001
+From: Andreas Schneider <asn@samba.org>
+Date: Wed, 9 Feb 2022 16:33:10 +0100
+Subject: [PATCH 1/6] selftest: Do not force -d0 for smbd/nmbd/winbindd
+
+We have the env variable SERVER_LOG_LEVEL which allows you to change
+the log level on the command line. If we force -d0 this will not work.
+
+make test TESTS="samba" SERVER_LOG_LEVEL=10
+
+Signed-off-by: Andreas Schneider <asn@samba.org>
+Reviewed-by: Jeremy Allison <jra@samba.org>
+(cherry picked from commit 9693f7ea7383c6a51ab58b7c8255b30206f18a3b)
+---
+ selftest/target/Samba3.pm | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/selftest/target/Samba3.pm b/selftest/target/Samba3.pm
+index b901fd2677a..64a9a791a61 100755
+--- a/selftest/target/Samba3.pm
++++ b/selftest/target/Samba3.pm
+@@ -2153,7 +2153,7 @@ sub make_bin_cmd
+ {
+ 	my ($self, $binary, $env_vars, $options, $valgrind, $dont_log_stdout) = @_;
+ 
+-	my @optargs = ("-d0");
++	my @optargs = ();
+ 	if (defined($options)) {
+ 		@optargs = split(/ /, $options);
+ 	}
+-- 
+2.34.1
+
+
+From 22c2899dfc787736c19857997291c151886b7ac0 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Pavel=20Filipensk=C3=BD?= <pfilipen@redhat.com>
+Date: Tue, 8 Feb 2022 12:07:03 +0100
+Subject: [PATCH 2/6] s3:modules: Implement dummy virus scanner that uses
+ filename matching
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Bug: https://bugzilla.samba.org/show_bug.cgi?id=14971
+
+Signed-off-by: Pavel Filipenský <pfilipen@redhat.com>
+Reviewed-by: Jeremy Allison <jra@samba.org>
+Reviewed-by: Andreas Schneider <asn@samba.org>
+(cherry picked from commit 9f34babec7c6aca3d91f226705d3b3996792e5f1)
+---
+ source3/modules/vfs_virusfilter.c        | 12 +++++
+ source3/modules/vfs_virusfilter_common.h |  4 ++
+ source3/modules/vfs_virusfilter_dummy.c  | 58 ++++++++++++++++++++++++
+ source3/modules/wscript_build            |  1 +
+ 4 files changed, 75 insertions(+)
+ create mode 100644 source3/modules/vfs_virusfilter_dummy.c
+
+diff --git a/source3/modules/vfs_virusfilter.c b/source3/modules/vfs_virusfilter.c
+index 9fafe4e5d41..e6cbee7cd45 100644
+--- a/source3/modules/vfs_virusfilter.c
++++ b/source3/modules/vfs_virusfilter.c
+@@ -35,12 +35,14 @@
+ 
+ enum virusfilter_scanner_enum {
+ 	VIRUSFILTER_SCANNER_CLAMAV,
++	VIRUSFILTER_SCANNER_DUMMY,
+ 	VIRUSFILTER_SCANNER_FSAV,
+ 	VIRUSFILTER_SCANNER_SOPHOS
+ };
+ 
+ static const struct enum_list scanner_list[] = {
+ 	{ VIRUSFILTER_SCANNER_CLAMAV,	"clamav" },
++	{ VIRUSFILTER_SCANNER_DUMMY,	"dummy" },
+ 	{ VIRUSFILTER_SCANNER_FSAV,	"fsav" },
+ 	{ VIRUSFILTER_SCANNER_SOPHOS,	"sophos" },
+ 	{ -1,				NULL }
+@@ -199,6 +201,7 @@ static int virusfilter_vfs_connect(
+ 	int snum = SNUM(handle->conn);
+ 	struct virusfilter_config *config = NULL;
+ 	const char *exclude_files = NULL;
++	const char *infected_files = NULL;
+ 	const char *temp_quarantine_dir_mode = NULL;
+ 	const char *infected_file_command = NULL;
+ 	const char *scan_error_command = NULL;
+@@ -255,6 +258,12 @@ static int virusfilter_vfs_connect(
+ 		set_namearray(&config->exclude_files, exclude_files);
+ 	}
+ 
++	infected_files = lp_parm_const_string(
++		snum, "virusfilter", "infected files", NULL);
++	if (infected_files != NULL) {
++		set_namearray(&config->infected_files, infected_files);
++	}
++
+ 	config->cache_entry_limit = lp_parm_int(
+ 		snum, "virusfilter", "cache entry limit", 100);
+ 
+@@ -537,6 +546,9 @@ static int virusfilter_vfs_connect(
+ 	case VIRUSFILTER_SCANNER_CLAMAV:
+ 		ret = virusfilter_clamav_init(config);
+ 		break;
++	case VIRUSFILTER_SCANNER_DUMMY:
++		ret = virusfilter_dummy_init(config);
++		break;
+ 	default:
+ 		DBG_ERR("Unhandled scanner %d\n", backend);
+ 		return -1;
+diff --git a/source3/modules/vfs_virusfilter_common.h b/source3/modules/vfs_virusfilter_common.h
+index f71b0b949a7..463a9d74e9c 100644
+--- a/source3/modules/vfs_virusfilter_common.h
++++ b/source3/modules/vfs_virusfilter_common.h
+@@ -83,6 +83,9 @@ struct virusfilter_config {
+ 	/* Exclude files */
+ 	name_compare_entry		*exclude_files;
+ 
++	/* Infected files */
++	name_compare_entry		*infected_files;
++
+ 	/* Scan result cache */
+ 	struct virusfilter_cache	*cache;
+ 	int				cache_entry_limit;
+@@ -149,5 +152,6 @@ struct virusfilter_backend {
+ int virusfilter_sophos_init(struct virusfilter_config *config);
+ int virusfilter_fsav_init(struct virusfilter_config *config);
+ int virusfilter_clamav_init(struct virusfilter_config *config);
++int virusfilter_dummy_init(struct virusfilter_config *config);
+ 
+ #endif /* _VIRUSFILTER_COMMON_H */
+diff --git a/source3/modules/vfs_virusfilter_dummy.c b/source3/modules/vfs_virusfilter_dummy.c
+new file mode 100644
+index 00000000000..03405cd6629
+--- /dev/null
++++ b/source3/modules/vfs_virusfilter_dummy.c
+@@ -0,0 +1,58 @@
++/*
++   Samba-VirusFilter VFS modules
++   Dummy scanner with infected files support.
++   Copyright (C) 2022 Pavel Filipenský <pfilipen@redhat.com>
++
++   This program is free software; you can redistribute it and/or modify
++   it under the terms of the GNU General Public License as published by
++   the Free Software Foundation; either version 3 of the License, or
++   (at your option) any later version.
++
++   This program is distributed in the hope that it will be useful,
++   but WITHOUT ANY WARRANTY; without even the implied warranty of
++   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++   GNU General Public License for more details.
++
++   You should have received a copy of the GNU General Public License
++   along with this program.  If not, see <http://www.gnu.org/licenses/>.
++*/
++
++#include "modules/vfs_virusfilter_utils.h"
++
++static virusfilter_result virusfilter_dummy_scan(
++	struct vfs_handle_struct *handle,
++	struct virusfilter_config *config,
++	const struct files_struct *fsp,
++	char **reportp)
++{
++	bool ok;
++
++	DBG_INFO("Scanning file: %s\n", fsp_str_dbg(fsp));
++	ok = is_in_path(fsp->fsp_name->base_name,
++			config->infected_files,
++			false);
++	return ok ? VIRUSFILTER_RESULT_INFECTED : VIRUSFILTER_RESULT_CLEAN;
++}
++
++static struct virusfilter_backend_fns virusfilter_backend_dummy = {
++	.connect = NULL,
++	.disconnect = NULL,
++	.scan_init = NULL,
++	.scan = virusfilter_dummy_scan,
++	.scan_end = NULL,
++};
++
++int virusfilter_dummy_init(struct virusfilter_config *config)
++{
++	struct virusfilter_backend *backend = NULL;
++
++	backend = talloc_zero(config, struct virusfilter_backend);
++	if (backend == NULL) {
++		return -1;
++	}
++
++	backend->fns = &virusfilter_backend_dummy;
++	backend->name = "dummy";
++	config->backend = backend;
++	return 0;
++}
+diff --git a/source3/modules/wscript_build b/source3/modules/wscript_build
+index 40df4539392..ff318c3fa06 100644
+--- a/source3/modules/wscript_build
++++ b/source3/modules/wscript_build
+@@ -591,6 +591,7 @@ bld.SAMBA3_MODULE('vfs_virusfilter',
+                  vfs_virusfilter_sophos.c
+                  vfs_virusfilter_fsav.c
+                  vfs_virusfilter_clamav.c
++                 vfs_virusfilter_dummy.c
+                  ''',
+                  deps='samba-util VFS_VIRUSFILTER_UTILS',
+                  init_function='',
+-- 
+2.34.1
+
+
+From a813dc2adec352a85ec526ac9a3ec67139b730d3 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Pavel=20Filipensk=C3=BD?= <pfilipen@redhat.com>
+Date: Tue, 8 Feb 2022 22:35:29 +0100
+Subject: [PATCH 3/6] docs-xml:manpages: Document 'dummy' virusfilter and
+ 'virusfilter:infected files'
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Bug: https://bugzilla.samba.org/show_bug.cgi?id=14971
+
+Signed-off-by: Pavel Filipenský <pfilipen@redhat.com>
+Reviewed-by: Jeremy Allison <jra@samba.org>
+Reviewed-by: Andreas Schneider <asn@samba.org>
+(cherry picked from commit 2fd518e5cc63221c162c9b3f8526b9b7c9e34969)
+---
+ docs-xml/manpages/vfs_virusfilter.8.xml | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+diff --git a/docs-xml/manpages/vfs_virusfilter.8.xml b/docs-xml/manpages/vfs_virusfilter.8.xml
+index 329a35af68a..88f91d73a42 100644
+--- a/docs-xml/manpages/vfs_virusfilter.8.xml
++++ b/docs-xml/manpages/vfs_virusfilter.8.xml
+@@ -48,6 +48,10 @@
+ 		  scanner</para></listitem>
+ 		  <listitem><para><emphasis>clamav</emphasis>, the ClamAV
+ 		  scanner</para></listitem>
++		  <listitem><para><emphasis>dummy</emphasis>, dummy scanner used in
++		  tests. Checks against the <emphasis>infected files</emphasis>
++		  parameter and flags any name that matches as infected.
++		  </para></listitem>
+ 		</itemizedlist>
+ 		</listitem>
+ 		</varlistentry>
+@@ -264,6 +268,14 @@
+ 		</listitem>
+ 		</varlistentry>
+ 
++		<varlistentry>
++		<term>virusfilter:infected files = empty</term>
++		<listitem>
++		<para>Files that virusfilter <emphasis>dummy</emphasis> flags as infected.</para>
++		<para>If this option is not set, the default is empty.</para>
++		</listitem>
++		</varlistentry>
++
+ 		<varlistentry>
+ 		<term>virusfilter:block access on error = false</term>
+ 		<listitem>
+-- 
+2.34.1
+
+
+From b67c6fe07a506627439c6ffd07e687befbc122ba Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Pavel=20Filipensk=C3=BD?= <pfilipen@redhat.com>
+Date: Tue, 8 Feb 2022 15:34:56 +0100
+Subject: [PATCH 4/6] selftest: Fix trailing whitespace in Samba3.pm
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Bug: https://bugzilla.samba.org/show_bug.cgi?id=14971
+
+Signed-off-by: Pavel Filipenský <pfilipen@redhat.com>
+Reviewed-by: Jeremy Allison <jra@samba.org>
+Reviewed-by: Andreas Schneider <asn@samba.org>
+(cherry picked from commit 547b4c595a8513a4be99177edbaa39ce43840f7a)
+---
+ selftest/target/Samba3.pm | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/selftest/target/Samba3.pm b/selftest/target/Samba3.pm
+index 64a9a791a61..7584a0e7ba9 100755
+--- a/selftest/target/Samba3.pm
++++ b/selftest/target/Samba3.pm
+@@ -188,7 +188,7 @@ sub getlog_env_app($$$)
+ 	close(LOG);
+ 
+ 	return "" if $out eq $title;
+- 
++
+ 	return $out;
+ }
+ 
+@@ -2426,7 +2426,7 @@ sub provision($$)
+ 	my $nmbdsockdir="$prefix_abs/nmbd";
+ 	unlink($nmbdsockdir);
+ 
+-	## 
++	##
+ 	## create the test directory layout
+ 	##
+ 	die ("prefix_abs = ''") if $prefix_abs eq "";
+@@ -3290,7 +3290,7 @@ sub provision($$)
+ 	unless (open(PASSWD, ">$nss_wrapper_passwd")) {
+            warn("Unable to open $nss_wrapper_passwd");
+            return undef;
+-        } 
++        }
+ 	print PASSWD "nobody:x:$uid_nobody:$gid_nobody:nobody gecos:$prefix_abs:/bin/false
+ $unix_name:x:$unix_uid:$unix_gids[0]:$unix_name gecos:$prefix_abs:/bin/false
+ pdbtest:x:$uid_pdbtest:$gid_nogroup:pdbtest gecos:$prefix_abs:/bin/false
+-- 
+2.34.1
+
+
+From b558d8f8be4459fa9e588486984c4cadf65ede12 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Pavel=20Filipensk=C3=BD?= <pfilipen@redhat.com>
+Date: Tue, 8 Feb 2022 15:35:48 +0100
+Subject: [PATCH 5/6] s3:selftest: Add test for virus scanner
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Bug: https://bugzilla.samba.org/show_bug.cgi?id=14971
+
+Signed-off-by: Pavel Filipenský <pfilipen@redhat.com>
+
+Pair-Programmed-With: Andreas Schneider <asn@samba.org>
+Reviewed-by: Jeremy Allison <jra@samba.org>
+Reviewed-by: Andreas Schneider <asn@samba.org>
+(cherry picked from commit a25c714c34d3e00e0f3c29d2acfa98cf9cdbc544)
+---
+ selftest/knownfail.d/virus_scanner         |   2 +
+ selftest/target/Samba3.pm                  |  12 ++
+ source3/script/tests/test_virus_scanner.sh | 124 +++++++++++++++++++++
+ source3/selftest/tests.py                  |   9 ++
+ 4 files changed, 147 insertions(+)
+ create mode 100644 selftest/knownfail.d/virus_scanner
+ create mode 100755 source3/script/tests/test_virus_scanner.sh
+
+diff --git a/selftest/knownfail.d/virus_scanner b/selftest/knownfail.d/virus_scanner
+new file mode 100644
+index 00000000000..6df3fd20627
+--- /dev/null
++++ b/selftest/knownfail.d/virus_scanner
+@@ -0,0 +1,2 @@
++^samba3.blackbox.virus_scanner.check_infected_read  # test download infected file ('vfs objects = virusfilter')
++^samba3.blackbox.virus_scanner.check_infected_write # test upload infected file ('vfs objects = virusfilter')
+diff --git a/selftest/target/Samba3.pm b/selftest/target/Samba3.pm
+index 7584a0e7ba9..c1d0c60d96a 100755
+--- a/selftest/target/Samba3.pm
++++ b/selftest/target/Samba3.pm
+@@ -1688,6 +1688,9 @@ sub setup_fileserver
+ 	my $veto_sharedir="$share_dir/veto";
+ 	push(@dirs,$veto_sharedir);
+ 
++	my $virusfilter_sharedir="$share_dir/virusfilter";
++	push(@dirs,$virusfilter_sharedir);
++
+ 	my $ip4 = Samba::get_ipv4_addr("FILESERVER");
+ 	my $fileserver_options = "
+ 	kernel change notify = yes
+@@ -1813,6 +1816,15 @@ sub setup_fileserver
+ 	path = $veto_sharedir
+ 	delete veto files = yes
+ 
++[virusfilter]
++	path = $virusfilter_sharedir
++	vfs objects = acl_xattr virusfilter
++	virusfilter:scanner = dummy
++	virusfilter:min file size = 0
++	virusfilter:infected files = *infected*
++	virusfilter:infected file action = rename
++	virusfilter:scan on close = yes
++
+ [homes]
+ 	comment = Home directories
+ 	browseable = No
+diff --git a/source3/script/tests/test_virus_scanner.sh b/source3/script/tests/test_virus_scanner.sh
+new file mode 100755
+index 00000000000..2234ea6ca89
+--- /dev/null
++++ b/source3/script/tests/test_virus_scanner.sh
+@@ -0,0 +1,124 @@
++#!/bin/sh
++# Copyright (c) 2022      Pavel Filipenský <pfilipen@redhat.com>
++# shellcheck disable=1091
++
++if [ $# -lt 4 ]; then
++cat <<EOF
++Usage: $0 SERVER_IP SHARE LOCAL_PATH SMBCLIENT
++EOF
++exit 1;
++fi
++
++SERVER_IP=${1}
++SHARE=${2}
++LOCAL_PATH=${3}
++SMBCLIENT=${4}
++
++SMBCLIENT="${VALGRIND} ${SMBCLIENT}"
++
++failed=0
++sharedir="${LOCAL_PATH}/${SHARE}"
++
++incdir="$(dirname "$0")/../../../testprogs/blackbox"
++. "${incdir}/subunit.sh"
++
++check_infected_read()
++{
++    rm -rf "${sharedir:?}"/*
++
++    if ! touch "${sharedir}/infected.txt"; then
++        echo "ERROR: Cannot create ${sharedir}/infected.txt"
++        return 1
++    fi
++
++    ${SMBCLIENT} "//${SERVER_IP}/${SHARE}" -U"${USER}"%"${PASSWORD}" -c "get infected.txt ${sharedir}/infected.download.txt"
++
++    # check that virusfilter:rename prefix/suffix was added
++    if [ ! -f "${sharedir}/virusfilter.infected.txt.infected" ]; then
++        echo "ERROR: ${sharedir}/virusfilter.infected.txt.infected is missing."
++        return 1
++    fi
++
++    # check that file was not downloaded
++    if [ -f "${sharedir}/infected.download.txt" ]; then
++        echo "ERROR: {sharedir}/infected.download.txt should not exist."
++        return 1
++    fi
++
++    return 0
++}
++
++check_infected_write()
++{
++    rm -rf "${sharedir:?}"/*
++    smbfile=infected.upload.txt
++    smbfilerenamed="virusfilter.${smbfile}.infected"
++
++    # non empty file is needed
++    # vsf_virusfilter performs a scan only if fsp->fsp_flags.modified
++    if ! echo "Hello Virus!" > "${sharedir}/infected.txt"; then
++        echo "ERROR: Cannot create ${sharedir}/infected.txt"
++        return 1
++    fi
++
++    ${SMBCLIENT} "//${SERVER_IP}/${SHARE}" -U"${USER}"%"${PASSWORD}" -c "put ${sharedir}/infected.txt ${smbfile}"
++
++    # check that virusfilter:rename prefix/suffix was added
++    if [ ! -f "${sharedir}/${smbfilerenamed}" ]; then
++        echo "ERROR: ${sharedir}/${smbfilerenamed} is missing."
++        return 1
++    fi
++
++    # check that file was not uploaded
++    if [ -f "${sharedir}/infected.upload.txt" ]; then
++        echo "ERROR: {sharedir}/${smbfile} should not exist."
++        return 1
++    fi
++
++    return 0
++}
++
++check_healthy_read()
++{
++    rm -rf "${sharedir:?}"/*
++
++    if ! echo "Hello Samba!" > "${sharedir}/healthy.txt"; then
++        echo "ERROR: Cannot create ${sharedir}/healthy.txt"
++        return 1
++    fi
++
++    ${SMBCLIENT} //"${SERVER_IP}"/"${SHARE}" -U"${USER}"%"${PASSWORD}" -c "get healthy.txt ${sharedir}/healthy.download.txt"
++
++    if ! cmp "${sharedir}/healthy.txt" "${sharedir}/healthy.download.txt"; then
++        echo "ERROR: cmp ${sharedir}/healthy.txt ${sharedir}/healthy.download.txt FAILED"
++        return 1
++    fi
++
++    return 0
++}
++
++check_healthy_write()
++{
++    rm -rf "${sharedir:?}"/*
++
++    if ! echo "Hello Samba!" > "${sharedir}/healthy.txt"; then
++        echo "ERROR: Cannot create ${sharedir}/healthy.txt"
++        return 1
++    fi
++
++    ${SMBCLIENT} //"${SERVER_IP}"/"${SHARE}" -U"${USER}"%"${PASSWORD}" -c "put ${sharedir}/healthy.txt healthy.upload.txt"
++
++    if ! cmp "${sharedir}/healthy.txt" "${sharedir}/healthy.upload.txt"; then
++        echo "ERROR: cmp ${sharedir}/healthy.txt ${sharedir}/healthy.upload.txt FAILED"
++        return 1
++    fi
++
++    return 0
++}
++
++testit "check_infected_read"  check_infected_read  || failed=$((failed + 1))
++testit "check_infected_write" check_infected_write || failed=$((failed + 1))
++testit "check_healthy_read"   check_healthy_read   || failed=$((failed + 1))
++testit "check_healthy_write"  check_healthy_write  || failed=$((failed + 1))
++
++testok "$0" "$failed"
+diff --git a/source3/selftest/tests.py b/source3/selftest/tests.py
+index 701be011f70..6b146c76381 100755
+--- a/source3/selftest/tests.py
++++ b/source3/selftest/tests.py
+@@ -1240,6 +1240,15 @@ plantestsuite("samba3.blackbox.smbXsrv_client_dead_rec", "fileserver:local",
+                '$SERVER_IP',
+                "tmp"])
+ 
++env = 'fileserver'
++plantestsuite("samba3.blackbox.virus_scanner", "%s:local" % (env),
++              [os.path.join(samba3srcdir,
++                            "script/tests/test_virus_scanner.sh"),
++               '$SERVER_IP',
++               "virusfilter",
++               '$LOCAL_PATH',
++               smbclient3])
++
+ for env in ['fileserver', 'simpleserver']:
+     plantestsuite("samba3.blackbox.smbclient.encryption", env,
+                   [os.path.join(samba3srcdir, "script/tests/test_smbclient_encryption.sh"),
+-- 
+2.34.1
+
+
+From 275139352e854c7b01a53014b16673c8c7254fa9 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Pavel=20Filipensk=C3=BD?= <pfilipen@redhat.com>
+Date: Mon, 7 Feb 2022 23:06:10 +0100
+Subject: [PATCH 6/6] s3:modules: Fix virusfilter_vfs_openat
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Bug: https://bugzilla.samba.org/show_bug.cgi?id=14971
+
+Signed-off-by: Pavel Filipenský <pfilipen@redhat.com>
+
+Pair-Programmed-With: Andreas Schneider <asn@samba.org>
+Reviewed-by: Jeremy Allison <jra@samba.org>
+Reviewed-by: Andreas Schneider <asn@samba.org>
+
+Autobuild-User(master): Jeremy Allison <jra@samba.org>
+Autobuild-Date(master): Thu Feb 10 22:09:06 UTC 2022 on sn-devel-184
+
+(cherry picked from commit 3f1c958f6fa9d2991185f4e281a377a295d09f9c)
+---
+ selftest/knownfail.d/virus_scanner | 2 --
+ source3/modules/vfs_virusfilter.c  | 6 +++---
+ 2 files changed, 3 insertions(+), 5 deletions(-)
+ delete mode 100644 selftest/knownfail.d/virus_scanner
+
+diff --git a/selftest/knownfail.d/virus_scanner b/selftest/knownfail.d/virus_scanner
+deleted file mode 100644
+index 6df3fd20627..00000000000
+--- a/selftest/knownfail.d/virus_scanner
++++ /dev/null
+@@ -1,2 +0,0 @@
+-^samba3.blackbox.virus_scanner.check_infected_read  # test download infected file ('vfs objects = virusfilter')
+-^samba3.blackbox.virus_scanner.check_infected_write # test upload infected file ('vfs objects = virusfilter')
+diff --git a/source3/modules/vfs_virusfilter.c b/source3/modules/vfs_virusfilter.c
+index e6cbee7cd45..d1554967ad1 100644
+--- a/source3/modules/vfs_virusfilter.c
++++ b/source3/modules/vfs_virusfilter.c
+@@ -1309,21 +1309,21 @@ static int virusfilter_vfs_openat(struct vfs_handle_struct *handle,
+ 		 */
+ 		goto virusfilter_vfs_open_next;
+ 	}
+-	ret = S_ISREG(smb_fname->st.st_ex_mode);
++	ret = S_ISREG(sbuf.st_ex_mode);
+ 	if (ret == 0) {
+ 		DBG_INFO("Not scanned: Directory or special file: %s/%s\n",
+ 			 cwd_fname, fname);
+ 		goto virusfilter_vfs_open_next;
+ 	}
+ 	if (config->max_file_size > 0 &&
+-	    smb_fname->st.st_ex_size > config->max_file_size)
++	    sbuf.st_ex_size > config->max_file_size)
+ 	{
+ 		DBG_INFO("Not scanned: file size > max file size: %s/%s\n",
+ 			 cwd_fname, fname);
+ 		goto virusfilter_vfs_open_next;
+ 	}
+ 	if (config->min_file_size > 0 &&
+-	    smb_fname->st.st_ex_size < config->min_file_size)
++	    sbuf.st_ex_size < config->min_file_size)
+ 	{
+ 		DBG_INFO("Not scanned: file size < min file size: %s/%s\n",
+ 		      cwd_fname, fname);
+-- 
+2.34.1
+

@@ -1,0 +1,231 @@
+From 89f7b7790dd7f3a300718de2d811104dc0637bbd Mon Sep 17 00:00:00 2001
+From: Andreas Schneider <asn@samba.org>
+Date: Tue, 1 Feb 2022 10:06:30 +0100
+Subject: [PATCH 1/3] s3:winbindd: Add a sanity check for the range
+
+What we want to avoid:
+
+$ ./bin/testparm -s | grep "idmap config"
+        idmap config * : rangesize = 10000
+        idmap config * : range = 10000-19999
+        idmap config * : backend = autorid
+
+$ ./bin/wbinfo --name-to-sid BUILTIN/Administrators
+S-1-5-32-544 SID_ALIAS (4)
+
+$ ./bin/wbinfo --sid-to-gid S-1-5-32-544
+10000
+
+$ ./bin/wbinfo --name-to-sid ADDOMAIN/alice
+S-1-5-21-4058748110-895691256-3682847423-1107 SID_USER (1)
+
+$ ./bin/wbinfo --sid-to-gid S-1-5-21-984165912-589366285-3903095728-1107
+failed to call wbcSidToGid: WBC_ERR_DOMAIN_NOT_FOUND
+Could not convert sid S-1-5-21-984165912-589366285-3903095728-1107 to gid
+
+If only one range is configured we are either not able to map users/groups
+from our primary *and* the BUILTIN domain. We need at least two ranges to also
+cover the BUILTIN domain!
+
+BUG: https://bugzilla.samba.org/show_bug.cgi?id=14967
+
+Signed-off-by: Andreas Schneider <asn@samba.org>
+Reviewed-by: Guenther Deschner <gd@samba.org>
+(cherry picked from commit fe84ae5547313e482ea0eba8ddca5b38a033dc8f)
+---
+ source3/winbindd/idmap_autorid.c | 7 ++++---
+ 1 file changed, 4 insertions(+), 3 deletions(-)
+
+diff --git a/source3/winbindd/idmap_autorid.c b/source3/winbindd/idmap_autorid.c
+index ad53b5810ee..c7d56a37684 100644
+--- a/source3/winbindd/idmap_autorid.c
++++ b/source3/winbindd/idmap_autorid.c
+@@ -856,9 +856,10 @@ static NTSTATUS idmap_autorid_initialize(struct idmap_domain *dom)
+ 	config->maxranges = (dom->high_id - dom->low_id + 1) /
+ 	    config->rangesize;
+ 
+-	if (config->maxranges == 0) {
+-		DEBUG(1, ("Allowed uid range is smaller than rangesize. "
+-			  "Increase uid range or decrease rangesize.\n"));
++	if (config->maxranges < 2) {
++		DBG_WARNING("Allowed idmap range is not a least double the "
++			    "size of the rangesize. Please increase idmap "
++			    "range.\n");
+ 		status = NT_STATUS_INVALID_PARAMETER;
+ 		goto error;
+ 	}
+-- 
+2.35.1
+
+
+From 70a0069038948a22b1e7dfd8917a3487206ec770 Mon Sep 17 00:00:00 2001
+From: Andreas Schneider <asn@samba.org>
+Date: Tue, 1 Feb 2022 10:07:50 +0100
+Subject: [PATCH 2/3] s3:utils: Add a testparm check for idmap autorid
+
+What we want to avoid:
+
+$ ./bin/testparm -s | grep "idmap config"
+        idmap config * : rangesize = 10000
+        idmap config * : range = 10000-19999
+        idmap config * : backend = autorid
+
+$ ./bin/wbinfo --name-to-sid BUILTIN/Administrators
+S-1-5-32-544 SID_ALIAS (4)
+
+$ ./bin/wbinfo --sid-to-gid S-1-5-32-544
+10000
+
+$ ./bin/wbinfo --name-to-sid ADDOMAIN/alice
+S-1-5-21-4058748110-895691256-3682847423-1107 SID_USER (1)
+
+$ ./bin/wbinfo --sid-to-gid S-1-5-21-984165912-589366285-3903095728-1107
+failed to call wbcSidToGid: WBC_ERR_DOMAIN_NOT_FOUND
+Could not convert sid S-1-5-21-984165912-589366285-3903095728-1107 to gid
+
+If only one range is configured we are either not able to map users/groups
+from our primary *and* the BUILTIN domain. We need at least two ranges to also
+cover the BUILTIN domain!
+
+BUG: https://bugzilla.samba.org/show_bug.cgi?id=14967
+
+Signed-off-by: Andreas Schneider <asn@samba.org>
+Reviewed-by: Guenther Deschner <gd@samba.org>
+(cherry picked from commit db6d4da3411a910e7ce45fe1fecfabf2864eb9f4)
+---
+ source3/utils/testparm.c | 51 ++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 51 insertions(+)
+
+diff --git a/source3/utils/testparm.c b/source3/utils/testparm.c
+index 98bcc219b1e..58ba46bc15f 100644
+--- a/source3/utils/testparm.c
++++ b/source3/utils/testparm.c
+@@ -128,6 +128,21 @@ static bool lp_scan_idmap_found_domain(const char *string,
+ 	return false; /* Keep scanning */
+ }
+ 
++static int idmap_config_int(const char *domname, const char *option, int def)
++{
++	int len = snprintf(NULL, 0, "idmap config %s", domname);
++
++	if (len == -1) {
++		return def;
++	}
++	{
++		char config_option[len+1];
++		snprintf(config_option, sizeof(config_option),
++			 "idmap config %s", domname);
++		return lp_parm_int(-1, config_option, option, def);
++	}
++}
++
+ static bool do_idmap_check(void)
+ {
+ 	struct idmap_domains *d;
+@@ -157,6 +172,42 @@ static bool do_idmap_check(void)
+ 			rc);
+ 	}
+ 
++	/* Check autorid backend */
++	if (strequal(lp_idmap_default_backend(), "autorid")) {
++		struct idmap_config *c = NULL;
++		bool found = false;
++
++		for (i = 0; i < d->count; i++) {
++			c = &d->c[i];
++
++			if (strequal(c->backend, "autorid")) {
++				found = true;
++				break;
++			}
++		}
++
++		if (found) {
++			uint32_t rangesize =
++				idmap_config_int("*", "rangesize", 100000);
++			uint32_t maxranges =
++				(c->high - c->low  + 1) / rangesize;
++
++			if (maxranges < 2) {
++				fprintf(stderr,
++					"ERROR: The idmap autorid range "
++					"[%u-%u] needs to be at least twice as "
++					"big as the rangesize [%u]!"
++					"\n\n",
++					c->low,
++					c->high,
++					rangesize);
++				ok = false;
++				goto done;
++			}
++		}
++	}
++
++	/* Check for overlapping idmap ranges */
+ 	for (i = 0; i < d->count; i++) {
+ 		struct idmap_config *c = &d->c[i];
+ 		uint32_t j;
+-- 
+2.35.1
+
+
+From 9cc90a306bc31ca9fb0b82556ae28c173b77724e Mon Sep 17 00:00:00 2001
+From: Andreas Schneider <asn@samba.org>
+Date: Tue, 1 Feb 2022 10:05:19 +0100
+Subject: [PATCH 3/3] docs-xml: Fix idmap_autorid documentation
+
+What we want to avoid:
+
+$ ./bin/testparm -s | grep "idmap config"
+        idmap config * : rangesize = 10000
+        idmap config * : range = 10000-19999
+        idmap config * : backend = autorid
+
+$ ./bin/wbinfo --name-to-sid BUILTIN/Administrators
+S-1-5-32-544 SID_ALIAS (4)
+
+$ ./bin/wbinfo --sid-to-gid S-1-5-32-544
+10000
+
+$ ./bin/wbinfo --name-to-sid ADDOMAIN/alice
+S-1-5-21-4058748110-895691256-3682847423-1107 SID_USER (1)
+
+$ ./bin/wbinfo --sid-to-gid S-1-5-21-984165912-589366285-3903095728-1107
+failed to call wbcSidToGid: WBC_ERR_DOMAIN_NOT_FOUND
+Could not convert sid S-1-5-21-984165912-589366285-3903095728-1107 to gid
+
+If only one range is configured we are either not able to map users/groups
+from our primary *and* the BUILTIN domain. We need at least two ranges to also
+cover the BUILTIN domain!
+
+BUG: https://bugzilla.samba.org/show_bug.cgi?id=14967
+
+Signed-off-by: Andreas Schneider <asn@samba.org>
+Reviewed-by: Guenther Deschner <gd@samba.org>
+(cherry picked from commit 7e5afd8f1f7e5cfab1a8ef7f4293ac465b7cd8de)
+---
+ docs-xml/manpages/idmap_autorid.8.xml | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/docs-xml/manpages/idmap_autorid.8.xml b/docs-xml/manpages/idmap_autorid.8.xml
+index 6c4da1cad8a..980718f0bd4 100644
+--- a/docs-xml/manpages/idmap_autorid.8.xml
++++ b/docs-xml/manpages/idmap_autorid.8.xml
+@@ -48,7 +48,13 @@
+ 			and the corresponding map is discarded.  It is
+ 			intended as a way to avoid accidental UID/GID
+ 			overlaps between local and remotely defined
+-			IDs.
++			IDs. Note that the range should be a multiple
++			of the rangesize and needs to be at least twice
++			as large in order to have sufficient id range
++			space for the mandatory BUILTIN domain.
++			With a default rangesize of 100000 the range
++			needs to span at least 200000.
++			This would be: range = 100000 - 299999.
+ 		</para></listitem>
+ 		</varlistentry>
+ 
+-- 
+2.35.1
+

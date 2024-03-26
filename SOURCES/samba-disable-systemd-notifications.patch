@@ -1,0 +1,36 @@
+From 752de46cc57215b14b55f2c68334178454d7444f Mon Sep 17 00:00:00 2001
+From: "FeRD (Frank Dana)" <ferdnyc@gmail.com>
+Date: Mon, 24 Jan 2022 22:14:31 -0500
+Subject: [PATCH] printing/bgqd: Disable systemd notifications
+
+samba-bgqd daemon is started by existing Samba daemons. When running
+under systemd, those daemons control systemd notifications and
+samba-bgqd messages need to be silenced.
+
+BUG: https://bugzilla.samba.org/show_bug.cgi?id=14947
+
+Signed-off-by: FeRD (Frank Dana) <ferdnyc@gmail.com>
+Reviewed-by: Alexander Bokovoy <ab@samba.org>
+Reviewed-by: Andreas Schneider <asn@samba.org>
+(cherry picked from commit 36c861e25b1d9c5ce44bfcb46247e7e4747930c5)
+---
+ source3/printing/samba-bgqd.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/source3/printing/samba-bgqd.c b/source3/printing/samba-bgqd.c
+index f21327fc622..59ed0cc40db 100644
+--- a/source3/printing/samba-bgqd.c
++++ b/source3/printing/samba-bgqd.c
+@@ -252,6 +252,9 @@ int main(int argc, const char *argv[])
+ 
+ 	log_stdout = (debug_get_log_type() == DEBUG_STDOUT);
+ 
++	/* main process will notify systemd */
++	daemon_sd_notifications(false);
++
+ 	if (!cmdline_daemon_cfg->fork) {
+ 		daemon_status(progname, "Starting process ... ");
+ 	} else {
+-- 
+2.34.1
+

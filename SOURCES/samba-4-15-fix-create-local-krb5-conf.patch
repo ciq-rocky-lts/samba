@@ -1,0 +1,477 @@
+From 73368f962136398d79c22e7df6fe4f6d7ce3932f Mon Sep 17 00:00:00 2001
+From: Andreas Schneider <asn@samba.org>
+Date: Tue, 15 Mar 2022 16:53:02 +0100
+Subject: [PATCH 1/9] testprogs: Add test that local krb5.conf has been created
+
+BUG: https://bugzilla.samba.org/show_bug.cgi?id=15016
+
+Signed-off-by: Andreas Schneider <asn@samba.org>
+---
+ testprogs/blackbox/test_net_ads.sh | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/testprogs/blackbox/test_net_ads.sh b/testprogs/blackbox/test_net_ads.sh
+index 76b394b10a9..cfafb945b62 100755
+--- a/testprogs/blackbox/test_net_ads.sh
++++ b/testprogs/blackbox/test_net_ads.sh
+@@ -51,6 +51,12 @@ fi
+ 
+ testit "join" $VALGRIND $net_tool ads join -U$DC_USERNAME%$DC_PASSWORD || failed=`expr $failed + 1`
+ 
++workgroup=$(awk '/workgroup =/ { print $NR }' "${BASEDIR}/${WORKDIR}/client.conf")
++testit "local krb5.conf created" \
++	test -r \
++	"${BASEDIR}/${WORKDIR}/lockdir/smb_krb5/krb5.conf.${workgroup}" ||
++	failed=$((failed + 1))
++
+ testit "testjoin" $VALGRIND $net_tool ads testjoin -P --use-kerberos=required || failed=`expr $failed + 1`
+ 
+ netbios=$(grep "netbios name" $BASEDIR/$WORKDIR/client.conf | cut -f2 -d= | awk '{$1=$1};1')
+-- 
+2.35.1
+
+
+From d50e4298d6d713128cc3a7687cb7d5c8f4c213e4 Mon Sep 17 00:00:00 2001
+From: Andreas Schneider <asn@samba.org>
+Date: Tue, 15 Mar 2022 12:03:40 +0100
+Subject: [PATCH 2/9] s3:libads: Remove trailing spaces in kerberos.c
+
+BUG: https://bugzilla.samba.org/show_bug.cgi?id=15016
+
+Signed-off-by: Andreas Schneider <asn@samba.org>
+---
+ source3/libads/kerberos.c | 18 +++++++++---------
+ 1 file changed, 9 insertions(+), 9 deletions(-)
+
+diff --git a/source3/libads/kerberos.c b/source3/libads/kerberos.c
+index 75beeef4a44..60fe03fd5d7 100644
+--- a/source3/libads/kerberos.c
++++ b/source3/libads/kerberos.c
+@@ -1,4 +1,4 @@
+-/* 
++/*
+    Unix SMB/CIFS implementation.
+    kerberos utility library
+    Copyright (C) Andrew Tridgell 2001
+@@ -37,11 +37,11 @@
+ #define LIBADS_CCACHE_NAME "MEMORY:libads"
+ 
+ /*
+-  we use a prompter to avoid a crash bug in the kerberos libs when 
++  we use a prompter to avoid a crash bug in the kerberos libs when
+   dealing with empty passwords
+   this prompter is just a string copy ...
+ */
+-static krb5_error_code 
++static krb5_error_code
+ kerb_prompter(krb5_context ctx, void *data,
+ 	       const char *name,
+ 	       const char *banner,
+@@ -192,7 +192,7 @@ int kerberos_kinit_password_ext(const char *given_principal,
+ 		krb5_get_init_creds_opt_set_address_list(opt, addr->addrs);
+ 	}
+ 
+-	if ((code = krb5_get_init_creds_password(ctx, &my_creds, me, discard_const_p(char,password), 
++	if ((code = krb5_get_init_creds_password(ctx, &my_creds, me, discard_const_p(char,password),
+ 						 kerb_prompter, discard_const_p(char, password),
+ 						 0, NULL, opt))) {
+ 		goto out;
+@@ -299,7 +299,7 @@ int ads_kdestroy(const char *cc_name)
+ 	}
+ 
+ 	if ((code = krb5_cc_destroy (ctx, cc))) {
+-		DEBUG(3, ("ads_kdestroy: krb5_cc_destroy failed: %s\n", 
++		DEBUG(3, ("ads_kdestroy: krb5_cc_destroy failed: %s\n",
+ 			error_message(code)));
+ 	}
+ 
+@@ -348,10 +348,10 @@ int kerberos_kinit_password(const char *principal,
+ 			    int time_offset,
+ 			    const char *cache_name)
+ {
+-	return kerberos_kinit_password_ext(principal, 
+-					   password, 
+-					   time_offset, 
+-					   0, 
++	return kerberos_kinit_password_ext(principal,
++					   password,
++					   time_offset,
++					   0,
+ 					   0,
+ 					   cache_name,
+ 					   False,
+-- 
+2.35.1
+
+
+From 85f140daa2779dec38255a997ec77540365959ca Mon Sep 17 00:00:00 2001
+From: Andreas Schneider <asn@samba.org>
+Date: Tue, 15 Mar 2022 12:04:34 +0100
+Subject: [PATCH 3/9] s3:libads: Leave early on error in get_kdc_ip_string()
+
+This avoids useless allocations.
+
+BUG: https://bugzilla.samba.org/show_bug.cgi?id=15016
+
+Signed-off-by: Andreas Schneider <asn@samba.org>
+---
+ source3/libads/kerberos.c | 17 +++++++++++------
+ 1 file changed, 11 insertions(+), 6 deletions(-)
+
+diff --git a/source3/libads/kerberos.c b/source3/libads/kerberos.c
+index 60fe03fd5d7..1bf149ef09b 100644
+--- a/source3/libads/kerberos.c
++++ b/source3/libads/kerberos.c
+@@ -434,9 +434,14 @@ static char *get_kdc_ip_string(char *mem_ctx,
+ 	struct netlogon_samlogon_response **responses = NULL;
+ 	NTSTATUS status;
+ 	bool ok;
+-	char *kdc_str = talloc_asprintf(mem_ctx, "%s\t\tkdc = %s\n", "",
+-					print_canonical_sockaddr_with_port(mem_ctx, pss));
++	char *kdc_str = NULL;
+ 
++	SMB_ASSERT(pss != NULL);
++
++	kdc_str = talloc_asprintf(mem_ctx,
++				  "\t\tkdc = %s\n",
++				  print_canonical_sockaddr_with_port(mem_ctx,
++								     pss));
+ 	if (kdc_str == NULL) {
+ 		TALLOC_FREE(frame);
+ 		return NULL;
+@@ -516,15 +521,15 @@ static char *get_kdc_ip_string(char *mem_ctx,
+ 		}
+ 	}
+ 
+-	dc_addrs2 = talloc_zero_array(talloc_tos(),
+-				      struct tsocket_address *,
+-				      num_dcs);
+-
+ 	DBG_DEBUG("%zu additional KDCs to test\n", num_dcs);
+ 	if (num_dcs == 0) {
+ 		TALLOC_FREE(kdc_str);
+ 		goto out;
+ 	}
++
++	dc_addrs2 = talloc_zero_array(talloc_tos(),
++				      struct tsocket_address *,
++				      num_dcs);
+ 	if (dc_addrs2 == NULL) {
+ 		TALLOC_FREE(kdc_str);
+ 		goto out;
+-- 
+2.35.1
+
+
+From 010cb49995f00b6bb5058b8b1a69e684c0bb1050 Mon Sep 17 00:00:00 2001
+From: Andreas Schneider <asn@samba.org>
+Date: Tue, 15 Mar 2022 12:10:47 +0100
+Subject: [PATCH 4/9] s3:libads: Improve debug messages for get_kdc_ip_string()
+
+BUG: https://bugzilla.samba.org/show_bug.cgi?id=15016
+
+Signed-off-by: Andreas Schneider <asn@samba.org>
+---
+ source3/libads/kerberos.c | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/source3/libads/kerberos.c b/source3/libads/kerberos.c
+index 1bf149ef09b..6a46d72a156 100644
+--- a/source3/libads/kerberos.c
++++ b/source3/libads/kerberos.c
+@@ -590,7 +590,11 @@ static char *get_kdc_ip_string(char *mem_ctx,
+ 
+ 	result = kdc_str;
+ out:
+-	DBG_DEBUG("Returning\n%s\n", kdc_str);
++	if (result != NULL) {
++		DBG_DEBUG("Returning\n%s\n", kdc_str);
++	} else {
++		DBG_NOTICE("Failed to get KDC ip address\n");
++	}
+ 
+ 	TALLOC_FREE(ip_sa_site);
+ 	TALLOC_FREE(ip_sa_nonsite);
+-- 
+2.35.1
+
+
+From c0640d8ea59ef57a1d61151f790431bcf7fddeba Mon Sep 17 00:00:00 2001
+From: Andreas Schneider <asn@samba.org>
+Date: Tue, 15 Mar 2022 12:48:23 +0100
+Subject: [PATCH 5/9] s3:libads: Use talloc_asprintf_append() in
+ get_kdc_ip_string()
+
+BUG: https://bugzilla.samba.org/show_bug.cgi?id=15016
+
+Signed-off-by: Andreas Schneider <asn@samba.org>
+---
+ source3/libads/kerberos.c | 9 +++++----
+ 1 file changed, 5 insertions(+), 4 deletions(-)
+
+diff --git a/source3/libads/kerberos.c b/source3/libads/kerberos.c
+index 6a46d72a156..d1c410ffa4b 100644
+--- a/source3/libads/kerberos.c
++++ b/source3/libads/kerberos.c
+@@ -578,10 +578,11 @@ static char *get_kdc_ip_string(char *mem_ctx,
+ 		}
+ 
+ 		/* Append to the string - inefficient but not done often. */
+-		new_kdc_str = talloc_asprintf(mem_ctx, "%s\t\tkdc = %s\n",
+-					      kdc_str,
+-					      print_canonical_sockaddr_with_port(mem_ctx, &dc_addrs[i]));
+-		TALLOC_FREE(kdc_str);
++		new_kdc_str = talloc_asprintf_append(
++				kdc_str,
++				"\t\tkdc = %s\n",
++				print_canonical_sockaddr_with_port(
++					mem_ctx, &dc_addrs[i]));
+ 		if (new_kdc_str == NULL) {
+ 			goto out;
+ 		}
+-- 
+2.35.1
+
+
+From b8e73356ff44f0717ed413a4e8af51f043434a7f Mon Sep 17 00:00:00 2001
+From: Andreas Schneider <asn@samba.org>
+Date: Tue, 15 Mar 2022 12:56:58 +0100
+Subject: [PATCH 6/9] s3:libads: Allocate all memory on the talloc stackframe
+
+BUG: https://bugzilla.samba.org/show_bug.cgi?id=15016
+
+Signed-off-by: Andreas Schneider <asn@samba.org>
+---
+ source3/libads/kerberos.c | 10 ++++------
+ 1 file changed, 4 insertions(+), 6 deletions(-)
+
+diff --git a/source3/libads/kerberos.c b/source3/libads/kerberos.c
+index d1c410ffa4b..aadc65a3edc 100644
+--- a/source3/libads/kerberos.c
++++ b/source3/libads/kerberos.c
+@@ -438,7 +438,7 @@ static char *get_kdc_ip_string(char *mem_ctx,
+ 
+ 	SMB_ASSERT(pss != NULL);
+ 
+-	kdc_str = talloc_asprintf(mem_ctx,
++	kdc_str = talloc_asprintf(frame,
+ 				  "\t\tkdc = %s\n",
+ 				  print_canonical_sockaddr_with_port(mem_ctx,
+ 								     pss));
+@@ -459,7 +459,7 @@ static char *get_kdc_ip_string(char *mem_ctx,
+ 	 */
+ 
+ 	if (sitename) {
+-		status = get_kdc_list(talloc_tos(),
++		status = get_kdc_list(frame,
+ 					realm,
+ 					sitename,
+ 					&ip_sa_site,
+@@ -477,7 +477,7 @@ static char *get_kdc_ip_string(char *mem_ctx,
+ 
+ 	/* Get all KDC's. */
+ 
+-	status = get_kdc_list(talloc_tos(),
++	status = get_kdc_list(frame,
+ 					realm,
+ 					NULL,
+ 					&ip_sa_nonsite,
+@@ -589,7 +589,7 @@ static char *get_kdc_ip_string(char *mem_ctx,
+ 		kdc_str = new_kdc_str;
+ 	}
+ 
+-	result = kdc_str;
++	result = talloc_move(mem_ctx, &kdc_str);
+ out:
+ 	if (result != NULL) {
+ 		DBG_DEBUG("Returning\n%s\n", kdc_str);
+@@ -597,8 +597,6 @@ out:
+ 		DBG_NOTICE("Failed to get KDC ip address\n");
+ 	}
+ 
+-	TALLOC_FREE(ip_sa_site);
+-	TALLOC_FREE(ip_sa_nonsite);
+ 	TALLOC_FREE(frame);
+ 	return result;
+ }
+-- 
+2.35.1
+
+
+From e2ea1de6128195af937474b41a57756013c8249e Mon Sep 17 00:00:00 2001
+From: Andreas Schneider <asn@samba.org>
+Date: Tue, 15 Mar 2022 12:57:18 +0100
+Subject: [PATCH 7/9] s3:libads: Remove obsolete free's of kdc_str
+
+This is allocated on the stackframe now!
+
+BUG: https://bugzilla.samba.org/show_bug.cgi?id=15016
+
+Signed-off-by: Andreas Schneider <asn@samba.org>
+---
+ source3/libads/kerberos.c | 12 +-----------
+ 1 file changed, 1 insertion(+), 11 deletions(-)
+
+diff --git a/source3/libads/kerberos.c b/source3/libads/kerberos.c
+index aadc65a3edc..2087dc1e6f9 100644
+--- a/source3/libads/kerberos.c
++++ b/source3/libads/kerberos.c
+@@ -443,13 +443,11 @@ static char *get_kdc_ip_string(char *mem_ctx,
+ 				  print_canonical_sockaddr_with_port(mem_ctx,
+ 								     pss));
+ 	if (kdc_str == NULL) {
+-		TALLOC_FREE(frame);
+-		return NULL;
++		goto out;
+ 	}
+ 
+ 	ok = sockaddr_storage_to_samba_sockaddr(&sa, pss);
+ 	if (!ok) {
+-		TALLOC_FREE(kdc_str);
+ 		goto out;
+ 	}
+ 
+@@ -467,7 +465,6 @@ static char *get_kdc_ip_string(char *mem_ctx,
+ 		if (!NT_STATUS_IS_OK(status)) {
+ 			DBG_ERR("get_kdc_list fail %s\n",
+ 				nt_errstr(status));
+-			TALLOC_FREE(kdc_str);
+ 			goto out;
+ 		}
+ 		DBG_DEBUG("got %zu addresses from site %s search\n",
+@@ -485,7 +482,6 @@ static char *get_kdc_ip_string(char *mem_ctx,
+ 	if (!NT_STATUS_IS_OK(status)) {
+ 		DBG_ERR("get_kdc_list (site-less) fail %s\n",
+ 			nt_errstr(status));
+-		TALLOC_FREE(kdc_str);
+ 		goto out;
+ 	}
+ 	DBG_DEBUG("got %zu addresses from site-less search\n", count_nonsite);
+@@ -493,7 +489,6 @@ static char *get_kdc_ip_string(char *mem_ctx,
+ 	if (count_site + count_nonsite < count_site) {
+ 		/* Wrap check. */
+ 		DBG_ERR("get_kdc_list_talloc (site-less) fail wrap error\n");
+-		TALLOC_FREE(kdc_str);
+ 		goto out;
+ 	}
+ 
+@@ -501,7 +496,6 @@ static char *get_kdc_ip_string(char *mem_ctx,
+ 	dc_addrs = talloc_array(talloc_tos(), struct sockaddr_storage,
+ 				count_site + count_nonsite);
+ 	if (dc_addrs == NULL) {
+-		TALLOC_FREE(kdc_str);
+ 		goto out;
+ 	}
+ 
+@@ -523,7 +517,6 @@ static char *get_kdc_ip_string(char *mem_ctx,
+ 
+ 	DBG_DEBUG("%zu additional KDCs to test\n", num_dcs);
+ 	if (num_dcs == 0) {
+-		TALLOC_FREE(kdc_str);
+ 		goto out;
+ 	}
+ 
+@@ -531,7 +524,6 @@ static char *get_kdc_ip_string(char *mem_ctx,
+ 				      struct tsocket_address *,
+ 				      num_dcs);
+ 	if (dc_addrs2 == NULL) {
+-		TALLOC_FREE(kdc_str);
+ 		goto out;
+ 	}
+ 
+@@ -548,7 +540,6 @@ static char *get_kdc_ip_string(char *mem_ctx,
+ 			status = map_nt_error_from_unix(errno);
+ 			DEBUG(2,("Failed to create tsocket_address for %s - %s\n",
+ 				 addr, nt_errstr(status)));
+-			TALLOC_FREE(kdc_str);
+ 			goto out;
+ 		}
+ 	}
+@@ -566,7 +557,6 @@ static char *get_kdc_ip_string(char *mem_ctx,
+ 	if (!NT_STATUS_IS_OK(status)) {
+ 		DEBUG(10,("get_kdc_ip_string: cldap_multi_netlogon failed: "
+ 			  "%s\n", nt_errstr(status)));
+-		TALLOC_FREE(kdc_str);
+ 		goto out;
+ 	}
+ 
+-- 
+2.35.1
+
+
+From 8242cb20ed3149acb83a140c140bdbb90de58b65 Mon Sep 17 00:00:00 2001
+From: Andreas Schneider <asn@samba.org>
+Date: Tue, 15 Mar 2022 13:02:05 +0100
+Subject: [PATCH 8/9] s3:libads: Check print_canonical_sockaddr_with_port() for
+ NULL in get_kdc_ip_string()
+
+BUG: https://bugzilla.samba.org/show_bug.cgi?id=15016
+
+Signed-off-by: Andreas Schneider <asn@samba.org>
+---
+ source3/libads/kerberos.c | 9 +++++++--
+ 1 file changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/source3/libads/kerberos.c b/source3/libads/kerberos.c
+index 2087dc1e6f9..20dceeefb22 100644
+--- a/source3/libads/kerberos.c
++++ b/source3/libads/kerberos.c
+@@ -435,13 +435,18 @@ static char *get_kdc_ip_string(char *mem_ctx,
+ 	NTSTATUS status;
+ 	bool ok;
+ 	char *kdc_str = NULL;
++	char *canon_sockaddr = NULL;
+ 
+ 	SMB_ASSERT(pss != NULL);
+ 
++	canon_sockaddr = print_canonical_sockaddr_with_port(frame, pss);
++	if (canon_sockaddr == NULL) {
++		goto out;
++	}
++
+ 	kdc_str = talloc_asprintf(frame,
+ 				  "\t\tkdc = %s\n",
+-				  print_canonical_sockaddr_with_port(mem_ctx,
+-								     pss));
++				  canon_sockaddr);
+ 	if (kdc_str == NULL) {
+ 		goto out;
+ 	}
+-- 
+2.35.1
+
+
+From fbd0843fdd257bc0e4ebef53c7afa29f171e86e5 Mon Sep 17 00:00:00 2001
+From: Andreas Schneider <asn@samba.org>
+Date: Tue, 15 Mar 2022 13:10:06 +0100
+Subject: [PATCH 9/9] s3:libads: Fix creating local krb5.conf
+
+We create an KDC ip string entry directly at the beginning, use it if we
+don't have any additional DCs.
+
+BUG: https://bugzilla.samba.org/show_bug.cgi?id=15016
+
+Signed-off-by: Andreas Schneider <asn@samba.org>
+---
+ source3/libads/kerberos.c | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/source3/libads/kerberos.c b/source3/libads/kerberos.c
+index 20dceeefb22..3fd86e87064 100644
+--- a/source3/libads/kerberos.c
++++ b/source3/libads/kerberos.c
+@@ -522,6 +522,11 @@ static char *get_kdc_ip_string(char *mem_ctx,
+ 
+ 	DBG_DEBUG("%zu additional KDCs to test\n", num_dcs);
+ 	if (num_dcs == 0) {
++		/*
++		 * We do not have additional KDCs, but we have the one passed
++		 * in via `pss`. So just use that one and leave.
++		 */
++		result = talloc_move(mem_ctx, &kdc_str);
+ 		goto out;
+ 	}
+ 
+-- 
+2.35.1
+

@@ -1,0 +1,764 @@
+From 1d5dc35b3c5d793f75cd6572bdda2a1ab0df99cc Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Pavel=20Filipensk=C3=BD?= <pfilipen@redhat.com>
+Date: Fri, 10 Dec 2021 16:08:04 +0100
+Subject: [PATCH 01/10] s3:utils: set ads->auth.flags using krb5_state
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+BUG: https://bugzilla.samba.org/show_bug.cgi?id=14955
+
+Pair-Programmed-With: Andreas Schneider <asn@samba.org>
+
+Signed-off-by: Pavel Filipenský <pfilipen@redhat.com>
+Signed-off-by: Andreas Schneider <asn@samba.org>
+Reviewed-by: Stefan Metzmacher <metze@samba.org>
+(cherry picked from commit afcdb090769f6f0f66428cd29f88b0283c6bd527)
+---
+ source3/utils/net_ads.c | 22 +++++++++++++++++++++-
+ 1 file changed, 21 insertions(+), 1 deletion(-)
+
+diff --git a/source3/utils/net_ads.c b/source3/utils/net_ads.c
+index 6ab4a0096b1..8f993f9ba4c 100644
+--- a/source3/utils/net_ads.c
++++ b/source3/utils/net_ads.c
+@@ -607,6 +607,8 @@ static ADS_STATUS ads_startup_int(struct net_context *c, bool only_own_domain,
+ 	char *cp;
+ 	const char *realm = NULL;
+ 	bool tried_closest_dc = false;
++	enum credentials_use_kerberos krb5_state =
++		CRED_USE_KERBEROS_DISABLED;
+ 
+ 	/* lp_realm() should be handled by a command line param,
+ 	   However, the join requires that realm be set in smb.conf
+@@ -650,10 +652,28 @@ retry:
+ 		ads->auth.password = smb_xstrdup(c->opt_password);
+ 	}
+ 
+-	ads->auth.flags |= auth_flags;
+ 	SAFE_FREE(ads->auth.user_name);
+ 	ads->auth.user_name = smb_xstrdup(c->opt_user_name);
+ 
++	ads->auth.flags |= auth_flags;
++
++	/* The ADS code will handle FIPS mode */
++	krb5_state = cli_credentials_get_kerberos_state(c->creds);
++	switch (krb5_state) {
++	case CRED_USE_KERBEROS_REQUIRED:
++		ads->auth.flags &= ~ADS_AUTH_DISABLE_KERBEROS;
++		ads->auth.flags &= ~ADS_AUTH_ALLOW_NTLMSSP;
++		break;
++	case CRED_USE_KERBEROS_DESIRED:
++		ads->auth.flags &= ~ADS_AUTH_DISABLE_KERBEROS;
++		ads->auth.flags |= ADS_AUTH_ALLOW_NTLMSSP;
++		break;
++	case CRED_USE_KERBEROS_DISABLED:
++		ads->auth.flags |= ADS_AUTH_DISABLE_KERBEROS;
++		ads->auth.flags |= ADS_AUTH_ALLOW_NTLMSSP;
++		break;
++	}
++
+        /*
+         * If the username is of the form "name@realm",
+         * extract the realm and convert to upper case.
+-- 
+2.33.1
+
+
+From 8f5c1246fdf03ae4d4abba50ef41e2a5cded61d3 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Pavel=20Filipensk=C3=BD?= <pfilipen@redhat.com>
+Date: Wed, 8 Dec 2021 16:05:17 +0100
+Subject: [PATCH 02/10] s3:libads: Remove trailing spaces from sasl.c
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+BUG: https://bugzilla.samba.org/show_bug.cgi?id=14955
+
+Signed-off-by: Pavel Filipenský <pfilipen@redhat.com>
+Signed-off-by: Andreas Schneider <asn@samba.org>
+Reviewed-by: Stefan Metzmacher <metze@samba.org>
+(cherry picked from commit 49d18f2d6e8872c2b0cbe2bf3324e7057c8438f4)
+---
+ source3/libads/sasl.c | 22 +++++++++++-----------
+ 1 file changed, 11 insertions(+), 11 deletions(-)
+
+diff --git a/source3/libads/sasl.c b/source3/libads/sasl.c
+index 60fa2bf80cb..b91e2d15bcf 100644
+--- a/source3/libads/sasl.c
++++ b/source3/libads/sasl.c
+@@ -1,18 +1,18 @@
+-/* 
++/*
+    Unix SMB/CIFS implementation.
+    ads sasl code
+    Copyright (C) Andrew Tridgell 2001
+-   
++
+    This program is free software; you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation; either version 3 of the License, or
+    (at your option) any later version.
+-   
++
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+-   
++
+    You should have received a copy of the GNU General Public License
+    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+@@ -117,7 +117,7 @@ static const struct ads_saslwrap_ops ads_sasl_gensec_ops = {
+ 	.disconnect	= ads_sasl_gensec_disconnect
+ };
+ 
+-/* 
++/*
+    perform a LDAP/SASL/SPNEGO/{NTLMSSP,KRB5} bind (just how many layers can
+    we fit on one socket??)
+ */
+@@ -496,7 +496,7 @@ static ADS_STATUS ads_generate_service_principal(ADS_STRUCT *ads,
+ 
+ #endif /* HAVE_KRB5 */
+ 
+-/* 
++/*
+    this performs a SASL/SPNEGO bind
+ */
+ static ADS_STATUS ads_sasl_spnego_bind(ADS_STRUCT *ads)
+@@ -529,7 +529,7 @@ static ADS_STATUS ads_sasl_spnego_bind(ADS_STRUCT *ads)
+ 	file_save("sasl_spnego.dat", blob.data, blob.length);
+ #endif
+ 
+-	/* the server sent us the first part of the SPNEGO exchange in the negprot 
++	/* the server sent us the first part of the SPNEGO exchange in the negprot
+ 	   reply */
+ 	if (!spnego_parse_negTokenInit(talloc_tos(), blob, OIDs, &given_principal, NULL) ||
+ 			OIDs[0] == NULL) {
+@@ -557,7 +557,7 @@ static ADS_STATUS ads_sasl_spnego_bind(ADS_STRUCT *ads)
+ 
+ #ifdef HAVE_KRB5
+ 	if (!(ads->auth.flags & ADS_AUTH_DISABLE_KERBEROS) &&
+-	    got_kerberos_mechanism) 
++	    got_kerberos_mechanism)
+ 	{
+ 		mech = "KRB5";
+ 
+@@ -578,7 +578,7 @@ static ADS_STATUS ads_sasl_spnego_bind(ADS_STRUCT *ads)
+ 				  "calling kinit\n", ads_errstr(status)));
+ 		}
+ 
+-		status = ADS_ERROR_KRB5(ads_kinit_password(ads)); 
++		status = ADS_ERROR_KRB5(ads_kinit_password(ads));
+ 
+ 		if (ADS_ERR_OK(status)) {
+ 			status = ads_sasl_spnego_gensec_bind(ads, "GSS-SPNEGO",
+@@ -597,7 +597,7 @@ static ADS_STATUS ads_sasl_spnego_bind(ADS_STRUCT *ads)
+ 		}
+ 
+ 		/* only fallback to NTLMSSP if allowed */
+-		if (ADS_ERR_OK(status) || 
++		if (ADS_ERR_OK(status) ||
+ 		    !(ads->auth.flags & ADS_AUTH_ALLOW_NTLMSSP)) {
+ 			goto done;
+ 		}
+@@ -613,7 +613,7 @@ static ADS_STATUS ads_sasl_spnego_bind(ADS_STRUCT *ads)
+ #endif
+ 
+ 	/* lets do NTLMSSP ... this has the big advantage that we don't need
+-	   to sync clocks, and we don't rely on special versions of the krb5 
++	   to sync clocks, and we don't rely on special versions of the krb5
+ 	   library for HMAC_MD4 encryption */
+ 	mech = "NTLMSSP";
+ 	status = ads_sasl_spnego_gensec_bind(ads, "GSS-SPNEGO",
+-- 
+2.33.1
+
+
+From 2885c2186fd2d1d8e2fc5f90e58f54b0c72a72df Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Pavel=20Filipensk=C3=BD?= <pfilipen@redhat.com>
+Date: Thu, 9 Dec 2021 13:43:08 +0100
+Subject: [PATCH 03/10] s3:libads: Disable NTLMSSP for FIPS
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+BUG: https://bugzilla.samba.org/show_bug.cgi?id=14955
+
+Pair-Programmed-With: Andreas Schneider <asn@samba.org>
+
+Signed-off-by: Pavel Filipenský <pfilipen@redhat.com>
+Signed-off-by: Andreas Schneider <asn@samba.org>
+Reviewed-by: Stefan Metzmacher <metze@samba.org>
+(cherry picked from commit 7785eb9b78066f6f7ee2541cf72d80fcf7411329)
+---
+ source3/libads/sasl.c | 10 +++++++++-
+ 1 file changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/source3/libads/sasl.c b/source3/libads/sasl.c
+index b91e2d15bcf..992f7022a69 100644
+--- a/source3/libads/sasl.c
++++ b/source3/libads/sasl.c
+@@ -604,7 +604,7 @@ static ADS_STATUS ads_sasl_spnego_bind(ADS_STRUCT *ads)
+ 
+ 		DEBUG(1,("ads_sasl_spnego_gensec_bind(KRB5) failed "
+ 			 "for %s/%s with user[%s] realm[%s]: %s, "
+-			 "fallback to NTLMSSP\n",
++			 "try to fallback to NTLMSSP\n",
+ 			 p.service, p.hostname,
+ 			 ads->auth.user_name,
+ 			 ads->auth.realm,
+@@ -616,6 +616,14 @@ static ADS_STATUS ads_sasl_spnego_bind(ADS_STRUCT *ads)
+ 	   to sync clocks, and we don't rely on special versions of the krb5
+ 	   library for HMAC_MD4 encryption */
+ 	mech = "NTLMSSP";
++
++	if (lp_weak_crypto() == SAMBA_WEAK_CRYPTO_DISALLOWED) {
++		DBG_WARNING("We can't fallback to NTLMSSP, weak crypto is"
++			    " disallowed.\n");
++		status = ADS_ERROR_NT(NT_STATUS_NETWORK_CREDENTIAL_CONFLICT);
++		goto done;
++	}
++
+ 	status = ads_sasl_spnego_gensec_bind(ads, "GSS-SPNEGO",
+ 					     CRED_USE_KERBEROS_DISABLED,
+ 					     p.service, p.hostname,
+-- 
+2.33.1
+
+
+From 636281a0b09f20e4c91f649a950a8c9ca53d1e3c Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Pavel=20Filipensk=C3=BD?= <pfilipen@redhat.com>
+Date: Fri, 7 Jan 2022 10:31:19 +0100
+Subject: [PATCH 04/10] s3:libads: Improve debug messages for SASL bind
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+BUG: https://bugzilla.samba.org/show_bug.cgi?id=14955
+
+Pair-Programmed-With: Andreas Schneider <asn@samba.org>
+
+Signed-off-by: Pavel Filipenský <pfilipen@redhat.com>
+Signed-off-by: Andreas Schneider <asn@samba.org>
+Reviewed-by: Stefan Metzmacher <metze@samba.org>
+(cherry picked from commit 5f6251abf2f468b3744a96376b0e1c3bc317c738)
+---
+ source3/libads/sasl.c | 22 +++++++++++-----------
+ 1 file changed, 11 insertions(+), 11 deletions(-)
+
+diff --git a/source3/libads/sasl.c b/source3/libads/sasl.c
+index 992f7022a69..ea98aa47ecd 100644
+--- a/source3/libads/sasl.c
++++ b/source3/libads/sasl.c
+@@ -586,13 +586,13 @@ static ADS_STATUS ads_sasl_spnego_bind(ADS_STRUCT *ads)
+ 							p.service, p.hostname,
+ 							blob);
+ 			if (!ADS_ERR_OK(status)) {
+-				DEBUG(0,("kinit succeeded but "
+-					"ads_sasl_spnego_gensec_bind(KRB5) failed "
+-					"for %s/%s with user[%s] realm[%s]: %s\n",
++				DBG_ERR("kinit succeeded but "
++					"SPNEGO bind with Kerberos failed "
++					"for %s/%s - user[%s], realm[%s]: %s\n",
+ 					p.service, p.hostname,
+ 					ads->auth.user_name,
+ 					ads->auth.realm,
+-					ads_errstr(status)));
++					ads_errstr(status));
+ 			}
+ 		}
+ 
+@@ -602,13 +602,13 @@ static ADS_STATUS ads_sasl_spnego_bind(ADS_STRUCT *ads)
+ 			goto done;
+ 		}
+ 
+-		DEBUG(1,("ads_sasl_spnego_gensec_bind(KRB5) failed "
+-			 "for %s/%s with user[%s] realm[%s]: %s, "
+-			 "try to fallback to NTLMSSP\n",
+-			 p.service, p.hostname,
+-			 ads->auth.user_name,
+-			 ads->auth.realm,
+-			 ads_errstr(status)));
++		DBG_WARNING("SASL bind with Kerberos failed "
++			    "for %s/%s - user[%s], realm[%s]: %s, "
++			    "try to fallback to NTLMSSP\n",
++			    p.service, p.hostname,
++			    ads->auth.user_name,
++			    ads->auth.realm,
++			    ads_errstr(status));
+ 	}
+ #endif
+ 
+-- 
+2.33.1
+
+
+From db4df8c4ebc9a10d14174878c3303c5f7a9e3d2f Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Pavel=20Filipensk=C3=BD?= <pfilipen@redhat.com>
+Date: Mon, 3 Jan 2022 11:13:06 +0100
+Subject: [PATCH 05/10] s3:libads: Disable NTLMSSP if not allowed (for builds
+ without kerberos)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+BUG: https://bugzilla.samba.org/show_bug.cgi?id=14955
+
+Pair-Programmed-With: Andreas Schneider <asn@samba.org>
+
+Signed-off-by: Pavel Filipenský <pfilipen@redhat.com>
+Signed-off-by: Andreas Schneider <asn@samba.org>
+Reviewed-by: Stefan Metzmacher <metze@samba.org>
+(cherry picked from commit 17ea2ccdabbe935ef571e1227908d51b755707bc)
+---
+ source3/libads/sasl.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/source3/libads/sasl.c b/source3/libads/sasl.c
+index ea98aa47ecd..1bcfe0490a8 100644
+--- a/source3/libads/sasl.c
++++ b/source3/libads/sasl.c
+@@ -617,6 +617,12 @@ static ADS_STATUS ads_sasl_spnego_bind(ADS_STRUCT *ads)
+ 	   library for HMAC_MD4 encryption */
+ 	mech = "NTLMSSP";
+ 
++	if (!(ads->auth.flags & ADS_AUTH_ALLOW_NTLMSSP)) {
++		DBG_WARNING("We can't use NTLMSSP, it is not allowed.\n");
++		status = ADS_ERROR_NT(NT_STATUS_NETWORK_CREDENTIAL_CONFLICT);
++		goto done;
++	}
++
+ 	if (lp_weak_crypto() == SAMBA_WEAK_CRYPTO_DISALLOWED) {
+ 		DBG_WARNING("We can't fallback to NTLMSSP, weak crypto is"
+ 			    " disallowed.\n");
+-- 
+2.33.1
+
+
+From 86e4b3649f001e162328b1b89ea2d068056514e7 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Pavel=20Filipensk=C3=BD?= <pfilipen@redhat.com>
+Date: Mon, 3 Jan 2022 15:33:46 +0100
+Subject: [PATCH 06/10] tests: Add test for disabling NTLMSSP for ldap client
+ connections
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+BUG: https://bugzilla.samba.org/show_bug.cgi?id=14955
+
+Signed-off-by: Pavel Filipenský <pfilipen@redhat.com>
+Signed-off-by: Andreas Schneider <asn@samba.org>
+Reviewed-by: Stefan Metzmacher <metze@samba.org>
+(cherry picked from commit eb0fa26dce77829995505f542af02e32df088cd6)
+---
+ .../test_weak_disable_ntlmssp_ldap.sh         | 41 +++++++++++++++++++
+ 1 file changed, 41 insertions(+)
+ create mode 100755 testprogs/blackbox/test_weak_disable_ntlmssp_ldap.sh
+
+diff --git a/testprogs/blackbox/test_weak_disable_ntlmssp_ldap.sh b/testprogs/blackbox/test_weak_disable_ntlmssp_ldap.sh
+new file mode 100755
+index 00000000000..2822ab29d14
+--- /dev/null
++++ b/testprogs/blackbox/test_weak_disable_ntlmssp_ldap.sh
+@@ -0,0 +1,41 @@
++#!/bin/sh
++# Blackbox tests for diabing NTLMSSP for ldap clinet connections
++# Copyright (c) 2022      Pavel Filipenský <pfilipen@redhat.com>
++
++if [ $# -lt 2 ]; then
++cat <<EOF
++Usage: $0 USERNAME PASSWORD
++EOF
++exit 1;
++fi
++
++USERNAME=$1
++PASSWORD=$2
++shift 2
++
++failed=0
++. `dirname $0`/subunit.sh
++
++samba_testparm="$BINDIR/testparm"
++samba_net="$BINDIR/net"
++
++unset GNUTLS_FORCE_FIPS_MODE
++
++# Checks that testparm reports: Weak crypto is allowed
++testit_grep "testparm" "Weak crypto is allowed" $samba_testparm --suppress-prompt $SMB_CONF_PATH 2>&1 || failed=`expr $failed + 1`
++
++# We should be allowed to use NTLM for connecting
++testit "net_ads_search.ntlm" $samba_net ads search --use-kerberos=off '(objectCategory=group)' sAMAccountName -U${USERNAME}%${PASSWORD} || failed=`expr $failed + 1`
++
++GNUTLS_FORCE_FIPS_MODE=1
++export GNUTLS_FORCE_FIPS_MODE
++
++# Checks that testparm reports: Weak crypto is disallowed
++testit_grep "testparm" "Weak crypto is disallowed" $samba_testparm --suppress-prompt $SMB_CONF_PATH 2>&1 || failed=`expr $failed + 1`
++
++# We should not be allowed to use NTLM for connecting
++testit_expect_failure_grep "net_ads_search.ntlm" "We can't fallback to NTLMSSP, weak crypto is disallowed." $samba_net ads search --use-kerberos=off -d10 '(objectCategory=group)' sAMAccountName -U${USERNAME}%${PASSWORD} || failed=`expr $failed + 1`
++
++unset GNUTLS_FORCE_FIPS_MODE
++
++exit $failed
+-- 
+2.33.1
+
+
+From bd39e9418da9dee81d5872037aa5834deba2b40b Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Pavel=20Filipensk=C3=BD?= <pfilipen@redhat.com>
+Date: Tue, 4 Jan 2022 12:00:20 +0100
+Subject: [PATCH 07/10] s4:selftest: plan test suite
+ samba4.blackbox.test_weak_disable_ntlmssp_ldap
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+BUG: https://bugzilla.samba.org/show_bug.cgi?id=14955
+
+Signed-off-by: Pavel Filipenský <pfilipen@redhat.com>
+Signed-off-by: Andreas Schneider <asn@samba.org>
+Reviewed-by: Stefan Metzmacher <metze@samba.org>
+(cherry picked from commit 9624e60e8c32de695661ae8f0fb5f8f9d836ab95)
+---
+ source4/selftest/tests.py | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/source4/selftest/tests.py b/source4/selftest/tests.py
+index 1e4b2ae6dd3..3a6a716f061 100755
+--- a/source4/selftest/tests.py
++++ b/source4/selftest/tests.py
+@@ -636,6 +636,7 @@ plantestsuite("samba4.blackbox.samba-tool_ntacl(ad_member:local)", "ad_member:lo
+ 
+ if have_gnutls_fips_mode_support:
+     plantestsuite("samba4.blackbox.weak_crypto.client", "ad_dc", [os.path.join(bbdir, "test_weak_crypto.sh"), '$SERVER', '$USERNAME', '$PASSWORD', '$REALM', '$DOMAIN', "$PREFIX/ad_dc"])
++    plantestsuite("samba4.blackbox.test_weak_disable_ntlmssp_ldap", "ad_member:local", [os.path.join(bbdir, "test_weak_disable_ntlmssp_ldap.sh"),'$DC_USERNAME', '$DC_PASSWORD'])
+ 
+     for env in ["ad_dc_fips", "ad_member_fips"]:
+         plantestsuite("samba4.blackbox.weak_crypto.server", env, [os.path.join(bbdir, "test_weak_crypto_server.sh"), '$SERVER', '$USERNAME', '$PASSWORD', '$REALM', '$DOMAIN', "$PREFIX/ad_dc_fips", configuration])
+-- 
+2.33.1
+
+
+From bde5c51a9eef39a165dad7aadf23ecaa5921f520 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Pavel=20Filipensk=C3=BD?= <pfilipen@redhat.com>
+Date: Tue, 18 Jan 2022 19:47:38 +0100
+Subject: [PATCH 08/10] s3:winbindd: Remove trailing spaces from winbindd_ads.c
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+BUG: https://bugzilla.samba.org/show_bug.cgi?id=14955
+
+Signed-off-by: Pavel Filipenský <pfilipen@redhat.com>
+Signed-off-by: Andreas Schneider <asn@samba.org>
+Reviewed-by: Stefan Metzmacher <metze@samba.org>
+(cherry picked from commit fcf225a356abb06d1205f66eb79f707c85803cb5)
+---
+ source3/winbindd/winbindd_ads.c | 38 ++++++++++++++++-----------------
+ 1 file changed, 19 insertions(+), 19 deletions(-)
+
+diff --git a/source3/winbindd/winbindd_ads.c b/source3/winbindd/winbindd_ads.c
+index 948c903f165..e415df347e6 100644
+--- a/source3/winbindd/winbindd_ads.c
++++ b/source3/winbindd/winbindd_ads.c
+@@ -326,7 +326,7 @@ static NTSTATUS query_user_list(struct winbindd_domain *domain,
+ 
+ 	if ( !winbindd_can_contact_domain( domain ) ) {
+ 		DEBUG(10,("query_user_list: No incoming trust for domain %s\n",
+-			  domain->name));		
++			  domain->name));
+ 		return NT_STATUS_OK;
+ 	}
+ 
+@@ -432,7 +432,7 @@ static NTSTATUS enum_dom_groups(struct winbindd_domain *domain,
+ 
+ 	if ( !winbindd_can_contact_domain( domain ) ) {
+ 		DEBUG(10,("enum_dom_groups: No incoming trust for domain %s\n",
+-			  domain->name));		
++			  domain->name));
+ 		return NT_STATUS_OK;
+ 	}
+ 
+@@ -447,7 +447,7 @@ static NTSTATUS enum_dom_groups(struct winbindd_domain *domain,
+ 	 * According to Section 5.1(4) of RFC 2251 if a value of a type is it's
+ 	 * default value, it MUST be absent. In case of extensible matching the
+ 	 * "dnattr" boolean defaults to FALSE and so it must be only be present
+-	 * when set to TRUE. 
++	 * when set to TRUE.
+ 	 *
+ 	 * When it is set to FALSE and the OpenLDAP lib (correctly) encodes a
+ 	 * filter using bitwise matching rule then the buggy AD fails to decode
+@@ -458,9 +458,9 @@ static NTSTATUS enum_dom_groups(struct winbindd_domain *domain,
+ 	 *
+ 	 * Thanks to Ralf Haferkamp for input and testing - Guenther */
+ 
+-	filter = talloc_asprintf(mem_ctx, "(&(objectCategory=group)(&(groupType:dn:%s:=%d)(!(groupType:dn:%s:=%d))))", 
++	filter = talloc_asprintf(mem_ctx, "(&(objectCategory=group)(&(groupType:dn:%s:=%d)(!(groupType:dn:%s:=%d))))",
+ 				 ADS_LDAP_MATCHING_RULE_BIT_AND, GROUP_TYPE_SECURITY_ENABLED,
+-				 ADS_LDAP_MATCHING_RULE_BIT_AND, 
++				 ADS_LDAP_MATCHING_RULE_BIT_AND,
+ 				 enum_dom_local_groups ? GROUP_TYPE_BUILTIN_LOCAL_GROUP : GROUP_TYPE_RESOURCE_GROUP);
+ 
+ 	if (filter == NULL) {
+@@ -529,7 +529,7 @@ static NTSTATUS enum_dom_groups(struct winbindd_domain *domain,
+ 	DEBUG(3,("ads enum_dom_groups gave %d entries\n", (*num_entries)));
+ 
+ done:
+-	if (res) 
++	if (res)
+ 		ads_msgfree(ads, res);
+ 
+ 	return status;
+@@ -542,12 +542,12 @@ static NTSTATUS enum_local_groups(struct winbindd_domain *domain,
+ 				struct wb_acct_info **info)
+ {
+ 	/*
+-	 * This is a stub function only as we returned the domain 
++	 * This is a stub function only as we returned the domain
+ 	 * local groups in enum_dom_groups() if the domain->native field
+ 	 * was true.  This is a simple performance optimization when
+ 	 * using LDAP.
+ 	 *
+-	 * if we ever need to enumerate domain local groups separately, 
++	 * if we ever need to enumerate domain local groups separately,
+ 	 * then this optimization in enum_dom_groups() will need
+ 	 * to be split out
+ 	 */
+@@ -601,7 +601,7 @@ static NTSTATUS rids_to_names(struct winbindd_domain *domain,
+    tokenGroups are not available. */
+ static NTSTATUS lookup_usergroups_member(struct winbindd_domain *domain,
+ 					 TALLOC_CTX *mem_ctx,
+-					 const char *user_dn, 
++					 const char *user_dn,
+ 					 struct dom_sid *primary_group,
+ 					 uint32_t *p_num_groups, struct dom_sid **user_sids)
+ {
+@@ -620,7 +620,7 @@ static NTSTATUS lookup_usergroups_member(struct winbindd_domain *domain,
+ 
+ 	if ( !winbindd_can_contact_domain( domain ) ) {
+ 		DEBUG(10,("lookup_usergroups_members: No incoming trust for domain %s\n",
+-			  domain->name));		
++			  domain->name));
+ 		return NT_STATUS_OK;
+ 	}
+ 
+@@ -702,7 +702,7 @@ static NTSTATUS lookup_usergroups_member(struct winbindd_domain *domain,
+ 
+ 	DEBUG(3,("ads lookup_usergroups (member) succeeded for dn=%s\n", user_dn));
+ done:
+-	if (res) 
++	if (res)
+ 		ads_msgfree(ads, res);
+ 
+ 	return status;
+@@ -883,14 +883,14 @@ static NTSTATUS lookup_usergroups(struct winbindd_domain *domain,
+ 	if (count != 1) {
+ 		status = NT_STATUS_UNSUCCESSFUL;
+ 		DEBUG(1,("lookup_usergroups(sid=%s) ads_search tokenGroups: "
+-			 "invalid number of results (count=%d)\n", 
++			 "invalid number of results (count=%d)\n",
+ 			 dom_sid_str_buf(sid, &buf),
+ 			 count));
+ 		goto done;
+ 	}
+ 
+ 	if (!msg) {
+-		DEBUG(1,("lookup_usergroups(sid=%s) ads_search tokenGroups: NULL msg\n", 
++		DEBUG(1,("lookup_usergroups(sid=%s) ads_search tokenGroups: NULL msg\n",
+ 			 dom_sid_str_buf(sid, &buf)));
+ 		status = NT_STATUS_UNSUCCESSFUL;
+ 		goto done;
+@@ -903,7 +903,7 @@ static NTSTATUS lookup_usergroups(struct winbindd_domain *domain,
+ 	}
+ 
+ 	if (!ads_pull_uint32(ads, msg, "primaryGroupID", &primary_group_rid)) {
+-		DEBUG(1,("%s: No primary group for sid=%s !?\n", 
++		DEBUG(1,("%s: No primary group for sid=%s !?\n",
+ 			 domain->name,
+ 			 dom_sid_str_buf(sid, &buf)));
+ 		goto done;
+@@ -913,7 +913,7 @@ static NTSTATUS lookup_usergroups(struct winbindd_domain *domain,
+ 
+ 	count = ads_pull_sids(ads, mem_ctx, msg, "tokenGroups", &sids);
+ 
+-	/* there must always be at least one group in the token, 
++	/* there must always be at least one group in the token,
+ 	   unless we are talking to a buggy Win2k server */
+ 
+ 	/* actually this only happens when the machine account has no read
+@@ -937,7 +937,7 @@ static NTSTATUS lookup_usergroups(struct winbindd_domain *domain,
+ 		/* lookup what groups this user is a member of by DN search on
+ 		 * "member" */
+ 
+-		status = lookup_usergroups_member(domain, mem_ctx, user_dn, 
++		status = lookup_usergroups_member(domain, mem_ctx, user_dn,
+ 						  &primary_group,
+ 						  &num_groups, user_sids);
+ 		*p_num_groups = num_groups;
+@@ -1302,7 +1302,7 @@ static NTSTATUS lookup_groupmem(struct winbindd_domain *domain,
+ 			DEBUG(10, ("lookup_groupmem: lsa_lookup_sids could "
+ 				   "not map any SIDs at all.\n"));
+ 			/* Don't handle this as an error here.
+-			 * There is nothing left to do with respect to the 
++			 * There is nothing left to do with respect to the
+ 			 * overall result... */
+ 		}
+ 		else if (!NT_STATUS_IS_OK(status)) {
+@@ -1367,13 +1367,13 @@ static NTSTATUS trusted_domains(struct winbindd_domain *domain,
+ 			NETR_TRUST_FLAG_IN_FOREST;
+ 	} else {
+ 		flags = NETR_TRUST_FLAG_IN_FOREST;
+-	}	
++	}
+ 
+ 	result = cm_connect_netlogon(domain, &cli);
+ 
+ 	if (!NT_STATUS_IS_OK(result)) {
+ 		DEBUG(5, ("trusted_domains: Could not open a connection to %s "
+-			  "for PIPE_NETLOGON (%s)\n", 
++			  "for PIPE_NETLOGON (%s)\n",
+ 			  domain->name, nt_errstr(result)));
+ 		return NT_STATUS_UNSUCCESSFUL;
+ 	}
+-- 
+2.33.1
+
+
+From db840cc208542a52a8e8a226b452c4df921fe9e6 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Pavel=20Filipensk=C3=BD?= <pfilipen@redhat.com>
+Date: Tue, 18 Jan 2022 19:44:54 +0100
+Subject: [PATCH 09/10] s3:winbindd: Do not set ADS_AUTH_ALLOW_NTLMSSP in FIPS
+ mode
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+BUG: https://bugzilla.samba.org/show_bug.cgi?id=14955
+
+Pair-Programmed-With: Andreas Schneider <asn@samba.org>
+
+Signed-off-by: Pavel Filipenský <pfilipen@redhat.com>
+Signed-off-by: Andreas Schneider <asn@samba.org>
+Reviewed-by: Stefan Metzmacher <metze@samba.org>
+(cherry picked from commit f03abaec2abbd22b9dc83ce4a103b1b3a2912d96)
+---
+ source3/winbindd/winbindd_ads.c | 19 ++++++++++++++++++-
+ 1 file changed, 18 insertions(+), 1 deletion(-)
+
+diff --git a/source3/winbindd/winbindd_ads.c b/source3/winbindd/winbindd_ads.c
+index e415df347e6..6f01ef6e334 100644
+--- a/source3/winbindd/winbindd_ads.c
++++ b/source3/winbindd/winbindd_ads.c
+@@ -34,6 +34,7 @@
+ #include "../libds/common/flag_mapping.h"
+ #include "libsmb/samlogon_cache.h"
+ #include "passdb.h"
++#include "auth/credentials/credentials.h"
+ 
+ #ifdef HAVE_ADS
+ 
+@@ -102,6 +103,7 @@ static ADS_STATUS ads_cached_connection_connect(ADS_STRUCT **adsp,
+ 	ADS_STATUS status;
+ 	struct sockaddr_storage dc_ss;
+ 	fstring dc_name;
++	enum credentials_use_kerberos krb5_state;
+ 
+ 	if (auth_realm == NULL) {
+ 		return ADS_ERROR_NT(NT_STATUS_UNSUCCESSFUL);
+@@ -125,7 +127,22 @@ static ADS_STATUS ads_cached_connection_connect(ADS_STRUCT **adsp,
+ 	ads->auth.renewable = renewable;
+ 	ads->auth.password = password;
+ 
+-	ads->auth.flags |= ADS_AUTH_ALLOW_NTLMSSP;
++	/* In FIPS mode, client use kerberos is forced to required. */
++	krb5_state = lp_client_use_kerberos();
++	switch (krb5_state) {
++	case CRED_USE_KERBEROS_REQUIRED:
++		ads->auth.flags &= ~ADS_AUTH_DISABLE_KERBEROS;
++		ads->auth.flags &= ~ADS_AUTH_ALLOW_NTLMSSP;
++		break;
++	case CRED_USE_KERBEROS_DESIRED:
++		ads->auth.flags &= ~ADS_AUTH_DISABLE_KERBEROS;
++		ads->auth.flags |= ADS_AUTH_ALLOW_NTLMSSP;
++		break;
++	case CRED_USE_KERBEROS_DISABLED:
++		ads->auth.flags |= ADS_AUTH_DISABLE_KERBEROS;
++		ads->auth.flags |= ADS_AUTH_ALLOW_NTLMSSP;
++		break;
++	}
+ 
+ 	ads->auth.realm = SMB_STRDUP(auth_realm);
+ 	if (!strupper_m(ads->auth.realm)) {
+-- 
+2.33.1
+
+
+From ead4f4c0a908f22ee2edf7510033345700e2efd9 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Pavel=20Filipensk=C3=BD?= <pfilipen@redhat.com>
+Date: Fri, 21 Jan 2022 12:01:33 +0100
+Subject: [PATCH 10/10] s3:libnet: Do not set ADS_AUTH_ALLOW_NTLMSSP in FIPS
+ mode
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+BUG: https://bugzilla.samba.org/show_bug.cgi?id=14955
+
+Pair-Programmed-With: Andreas Schneider <asn@samba.org>
+
+Signed-off-by: Pavel Filipenský <pfilipen@redhat.com>
+Signed-off-by: Andreas Schneider <asn@samba.org>
+Reviewed-by: Stefan Metzmacher <metze@samba.org>
+
+Autobuild-User(master): Stefan Metzmacher <metze@samba.org>
+Autobuild-Date(master): Sat Jan 22 00:27:52 UTC 2022 on sn-devel-184
+
+(cherry picked from commit fa5413b63c8f4a20ab5b803f5cc523e0658eefc9)
+---
+ source3/libnet/libnet_join.c | 18 +++++++++++++++++-
+ 1 file changed, 17 insertions(+), 1 deletion(-)
+
+diff --git a/source3/libnet/libnet_join.c b/source3/libnet/libnet_join.c
+index 02705f1c70c..4c67e9af5c4 100644
+--- a/source3/libnet/libnet_join.c
++++ b/source3/libnet/libnet_join.c
+@@ -139,6 +139,7 @@ static ADS_STATUS libnet_connect_ads(const char *dns_domain_name,
+ 	ADS_STATUS status;
+ 	ADS_STRUCT *my_ads = NULL;
+ 	char *cp;
++	enum credentials_use_kerberos krb5_state;
+ 
+ 	my_ads = ads_init(dns_domain_name,
+ 			  netbios_domain_name,
+@@ -148,7 +149,22 @@ static ADS_STATUS libnet_connect_ads(const char *dns_domain_name,
+ 		return ADS_ERROR_LDAP(LDAP_NO_MEMORY);
+ 	}
+ 
+-	my_ads->auth.flags |= ADS_AUTH_ALLOW_NTLMSSP;
++	/* In FIPS mode, client use kerberos is forced to required. */
++	krb5_state = lp_client_use_kerberos();
++	switch (krb5_state) {
++	case CRED_USE_KERBEROS_REQUIRED:
++		my_ads->auth.flags &= ~ADS_AUTH_DISABLE_KERBEROS;
++		my_ads->auth.flags &= ~ADS_AUTH_ALLOW_NTLMSSP;
++		break;
++	case CRED_USE_KERBEROS_DESIRED:
++		my_ads->auth.flags &= ~ADS_AUTH_DISABLE_KERBEROS;
++		my_ads->auth.flags |= ADS_AUTH_ALLOW_NTLMSSP;
++		break;
++	case CRED_USE_KERBEROS_DISABLED:
++		my_ads->auth.flags |= ADS_AUTH_DISABLE_KERBEROS;
++		my_ads->auth.flags |= ADS_AUTH_ALLOW_NTLMSSP;
++		break;
++	}
+ 
+ 	if (user_name) {
+ 		SAFE_FREE(my_ads->auth.user_name);
+-- 
+2.33.1
+

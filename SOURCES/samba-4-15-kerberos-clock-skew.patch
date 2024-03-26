@@ -1,0 +1,347 @@
+From 01205e1ff2a16ecdeb99fd4153f40f917decacee Mon Sep 17 00:00:00 2001
+From: Samuel Cabrero <scabrero@samba.org>
+Date: Wed, 13 Apr 2022 11:01:00 +0200
+Subject: [PATCH 1/4] s3:winbind: Do not use domain's private data to store the
+ SAMR pipes
+
+The domain's private_data pointer is also used to store a ADS_STRUCT,
+which is not allocated using talloc and there are many places casting
+this pointer directly.
+
+The recently added samba.tests.pam_winbind_setcred was randomly failing
+and after debugging it the problem was that kerberos authentication was
+failing because the time_offset passed to kerberos_return_pac() was
+wrong. This time_offset was retrieved from ads->auth.time_offset, where
+the ads pointer was directly casted from domain->private_data but
+private_data was pointing to a winbind_internal_pipes struct.
+
+BUG: https://bugzilla.samba.org/show_bug.cgi?id=15046
+
+Signed-off-by: Samuel Cabrero <scabrero@samba.org>
+Reviewed-by: Stefan Metzmacher <metze@samba.org>
+Reviewed-by: Andreas Schneider <asn@samba.org>
+(cherry picked from commit e1f29b0970f4cac52a9cd517be6862cf69a1433a)
+---
+ source3/winbindd/winbindd.h      |  6 ++++++
+ source3/winbindd/winbindd_ndr.c  |  3 +++
+ source3/winbindd/winbindd_samr.c | 18 ++++++------------
+ 3 files changed, 15 insertions(+), 12 deletions(-)
+
+diff --git a/source3/winbindd/winbindd.h b/source3/winbindd/winbindd.h
+index dac4a1fa927..762844502e5 100644
+--- a/source3/winbindd/winbindd.h
++++ b/source3/winbindd/winbindd.h
+@@ -43,6 +43,8 @@
+ 
+ #define WB_REPLACE_CHAR		'_'
+ 
++struct winbind_internal_pipes;
++
+ struct winbindd_cli_state {
+ 	struct winbindd_cli_state *prev, *next;   /* Linked list pointers */
+ 	int sock;                                 /* Open socket from client */
+@@ -157,6 +159,10 @@ struct winbindd_domain {
+ 
+ 	void *private_data;
+ 
++	struct {
++		struct winbind_internal_pipes *samr_pipes;
++	} backend_data;
++
+ 	/* A working DC */
+ 	char *dcname;
+ 	const char *ping_dcname;
+diff --git a/source3/winbindd/winbindd_ndr.c b/source3/winbindd/winbindd_ndr.c
+index 157ce1bff27..36901776b98 100644
+--- a/source3/winbindd/winbindd_ndr.c
++++ b/source3/winbindd/winbindd_ndr.c
+@@ -144,6 +144,9 @@ void ndr_print_winbindd_domain(struct ndr_print *ndr,
+ 	ndr_print_bool(ndr, "startup", r->startup);
+ 	ndr_print_winbindd_methods(ndr, "backend", r->backend);
+ 	ndr_print_ptr(ndr, "private_data", r->private_data);
++	ndr_print_ptr(ndr,
++		      "backend_data.samr_pipes",
++		      r->backend_data.samr_pipes);
+ 	ndr_print_string(ndr, "dcname", r->dcname);
+ 	ndr_print_sockaddr_storage(ndr, "dcaddr", &r->dcaddr);
+ 	ndr_print_time_t(ndr, "last_seq_check", r->last_seq_check);
+diff --git a/source3/winbindd/winbindd_samr.c b/source3/winbindd/winbindd_samr.c
+index 5e23ff8217b..ce66adcc0c7 100644
+--- a/source3/winbindd/winbindd_samr.c
++++ b/source3/winbindd/winbindd_samr.c
+@@ -130,7 +130,7 @@ static NTSTATUS open_cached_internal_pipe_conn(
+ {
+ 	struct winbind_internal_pipes *internal_pipes = NULL;
+ 
+-	if (domain->private_data == NULL) {
++	if (domain->backend_data.samr_pipes == NULL) {
+ 		TALLOC_CTX *frame = talloc_stackframe();
+ 		NTSTATUS status;
+ 
+@@ -156,14 +156,14 @@ static NTSTATUS open_cached_internal_pipe_conn(
+ 			return status;
+ 		}
+ 
+-		domain->private_data = talloc_move(domain, &internal_pipes);
++		domain->backend_data.samr_pipes =
++			talloc_move(domain, &internal_pipes);
+ 
+ 		TALLOC_FREE(frame);
+ 
+ 	}
+ 
+-	internal_pipes = talloc_get_type_abort(
+-		domain->private_data, struct winbind_internal_pipes);
++	internal_pipes = domain->backend_data.samr_pipes;
+ 
+ 	if (samr_domain_hnd) {
+ 		*samr_domain_hnd = internal_pipes->samr_domain_hnd;
+@@ -188,23 +188,17 @@ static bool reset_connection_on_error(struct winbindd_domain *domain,
+ 				      struct rpc_pipe_client *p,
+ 				      NTSTATUS status)
+ {
+-	struct winbind_internal_pipes *internal_pipes = NULL;
+ 	struct dcerpc_binding_handle *b = p->binding_handle;
+ 
+-	internal_pipes = talloc_get_type_abort(
+-		domain->private_data, struct winbind_internal_pipes);
+-
+ 	if (NT_STATUS_EQUAL(status, NT_STATUS_IO_TIMEOUT) ||
+ 	    NT_STATUS_EQUAL(status, NT_STATUS_IO_DEVICE_ERROR))
+ 	{
+-		TALLOC_FREE(internal_pipes);
+-		domain->private_data = NULL;
++		TALLOC_FREE(domain->backend_data.samr_pipes);
+ 		return true;
+ 	}
+ 
+ 	if (!dcerpc_binding_handle_is_connected(b)) {
+-		TALLOC_FREE(internal_pipes);
+-		domain->private_data = NULL;
++		TALLOC_FREE(domain->backend_data.samr_pipes);
+ 		return true;
+ 	}
+ 
+-- 
+2.35.1
+
+
+From 79ab2a5669a1e21e96f29cecc651dccacd7ace71 Mon Sep 17 00:00:00 2001
+From: Samuel Cabrero <scabrero@samba.org>
+Date: Wed, 13 Apr 2022 11:15:35 +0200
+Subject: [PATCH 2/4] s3:winbind: Simplify open_cached_internal_pipe_conn()
+
+BUG: https://bugzilla.samba.org/show_bug.cgi?id=15046
+
+Signed-off-by: Samuel Cabrero <scabrero@samba.org>
+Reviewed-by: Stefan Metzmacher <metze@samba.org>
+Reviewed-by: Andreas Schneider <asn@samba.org>
+(cherry picked from commit 91395e660a2b1b69bf74ca0b77aee416e2ac1db3)
+---
+ source3/winbindd/winbindd_samr.c | 10 ++++------
+ 1 file changed, 4 insertions(+), 6 deletions(-)
+
+diff --git a/source3/winbindd/winbindd_samr.c b/source3/winbindd/winbindd_samr.c
+index ce66adcc0c7..20b5d758d1a 100644
+--- a/source3/winbindd/winbindd_samr.c
++++ b/source3/winbindd/winbindd_samr.c
+@@ -128,9 +128,10 @@ static NTSTATUS open_cached_internal_pipe_conn(
+ 	struct rpc_pipe_client **lsa_pipe,
+ 	struct policy_handle *lsa_hnd)
+ {
+-	struct winbind_internal_pipes *internal_pipes = NULL;
++	struct winbind_internal_pipes *internal_pipes =
++		domain->backend_data.samr_pipes;
+ 
+-	if (domain->backend_data.samr_pipes == NULL) {
++	if (internal_pipes == NULL) {
+ 		TALLOC_CTX *frame = talloc_stackframe();
+ 		NTSTATUS status;
+ 
+@@ -157,14 +158,11 @@ static NTSTATUS open_cached_internal_pipe_conn(
+ 		}
+ 
+ 		domain->backend_data.samr_pipes =
+-			talloc_move(domain, &internal_pipes);
++			talloc_steal(domain, internal_pipes);
+ 
+ 		TALLOC_FREE(frame);
+-
+ 	}
+ 
+-	internal_pipes = domain->backend_data.samr_pipes;
+-
+ 	if (samr_domain_hnd) {
+ 		*samr_domain_hnd = internal_pipes->samr_domain_hnd;
+ 	}
+-- 
+2.35.1
+
+
+From d57f54deef45c638093717378adc1a0743699ae8 Mon Sep 17 00:00:00 2001
+From: Samuel Cabrero <scabrero@samba.org>
+Date: Wed, 13 Apr 2022 11:31:45 +0200
+Subject: [PATCH 3/4] s3:winbind: Do not use domain's private data to store the
+ ADS_STRUCT
+
+The ADS_STRUCT is not allocated using talloc and there are many places
+casting this pointer directly so use a typed pointer.
+
+BUG: https://bugzilla.samba.org/show_bug.cgi?id=15046
+
+Signed-off-by: Samuel Cabrero <scabrero@samba.org>
+Reviewed-by: Stefan Metzmacher <metze@samba.org>
+Reviewed-by: Andreas Schneider <asn@samba.org>
+(cherry picked from commit 3cb256439e9ceece26c2de82293c43486543e0cb)
+---
+ source3/winbindd/winbindd.h     |  2 ++
+ source3/winbindd/winbindd_ads.c | 10 +++++-----
+ source3/winbindd/winbindd_ndr.c |  3 +++
+ source3/winbindd/winbindd_pam.c |  6 ++----
+ 4 files changed, 12 insertions(+), 9 deletions(-)
+
+diff --git a/source3/winbindd/winbindd.h b/source3/winbindd/winbindd.h
+index 762844502e5..3cc88367b90 100644
+--- a/source3/winbindd/winbindd.h
++++ b/source3/winbindd/winbindd.h
+@@ -44,6 +44,7 @@
+ #define WB_REPLACE_CHAR		'_'
+ 
+ struct winbind_internal_pipes;
++struct ads_struct;
+ 
+ struct winbindd_cli_state {
+ 	struct winbindd_cli_state *prev, *next;   /* Linked list pointers */
+@@ -161,6 +162,7 @@ struct winbindd_domain {
+ 
+ 	struct {
+ 		struct winbind_internal_pipes *samr_pipes;
++		struct ads_struct *ads_conn;
+ 	} backend_data;
+ 
+ 	/* A working DC */
+diff --git a/source3/winbindd/winbindd_ads.c b/source3/winbindd/winbindd_ads.c
+index 6f01ef6e334..d350f160223 100644
+--- a/source3/winbindd/winbindd_ads.c
++++ b/source3/winbindd/winbindd_ads.c
+@@ -269,10 +269,10 @@ static ADS_STRUCT *ads_cached_connection(struct winbindd_domain *domain)
+ 	}
+ 
+ 	DEBUG(10,("ads_cached_connection\n"));
+-	ads_cached_connection_reuse((ADS_STRUCT **)&domain->private_data);
++	ads_cached_connection_reuse(&domain->backend_data.ads_conn);
+ 
+-	if (domain->private_data) {
+-		return (ADS_STRUCT *)domain->private_data;
++	if (domain->backend_data.ads_conn != NULL) {
++		return domain->backend_data.ads_conn;
+ 	}
+ 
+ 	/* the machine acct password might have change - fetch it every time */
+@@ -303,7 +303,7 @@ static ADS_STRUCT *ads_cached_connection(struct winbindd_domain *domain)
+ 	}
+ 
+ 	status = ads_cached_connection_connect(
+-					(ADS_STRUCT **)&domain->private_data,
++					&domain->backend_data.ads_conn,
+ 					domain->alt_name,
+ 					domain->name, NULL,
+ 					password, realm,
+@@ -322,7 +322,7 @@ static ADS_STRUCT *ads_cached_connection(struct winbindd_domain *domain)
+ 		return NULL;
+ 	}
+ 
+-	return (ADS_STRUCT *)domain->private_data;
++	return domain->backend_data.ads_conn;
+ }
+ 
+ /* Query display info for a realm. This is the basic user list fn */
+diff --git a/source3/winbindd/winbindd_ndr.c b/source3/winbindd/winbindd_ndr.c
+index 36901776b98..94ce9d73747 100644
+--- a/source3/winbindd/winbindd_ndr.c
++++ b/source3/winbindd/winbindd_ndr.c
+@@ -147,6 +147,9 @@ void ndr_print_winbindd_domain(struct ndr_print *ndr,
+ 	ndr_print_ptr(ndr,
+ 		      "backend_data.samr_pipes",
+ 		      r->backend_data.samr_pipes);
++	ndr_print_ptr(ndr,
++		      "backend_data.ads_conn",
++		      r->backend_data.ads_conn);
+ 	ndr_print_string(ndr, "dcname", r->dcname);
+ 	ndr_print_sockaddr_storage(ndr, "dcaddr", &r->dcaddr);
+ 	ndr_print_time_t(ndr, "last_seq_check", r->last_seq_check);
+diff --git a/source3/winbindd/winbindd_pam.c b/source3/winbindd/winbindd_pam.c
+index 1a2628b50ba..5505220335f 100644
+--- a/source3/winbindd/winbindd_pam.c
++++ b/source3/winbindd/winbindd_pam.c
+@@ -677,7 +677,6 @@ static NTSTATUS winbindd_raw_kerberos_login(TALLOC_CTX *mem_ctx,
+ 	fstring name_namespace, name_domain, name_user;
+ 	time_t ticket_lifetime = 0;
+ 	time_t renewal_until = 0;
+-	ADS_STRUCT *ads;
+ 	time_t time_offset = 0;
+ 	const char *user_ccache_file;
+ 	struct PAC_LOGON_INFO *logon_info = NULL;
+@@ -716,9 +715,8 @@ static NTSTATUS winbindd_raw_kerberos_login(TALLOC_CTX *mem_ctx,
+ 	/* 2nd step:
+ 	 * get kerberos properties */
+ 
+-	if (domain->private_data) {
+-		ads = (ADS_STRUCT *)domain->private_data;
+-		time_offset = ads->auth.time_offset;
++	if (domain->backend_data.ads_conn != NULL) {
++		time_offset = domain->backend_data.ads_conn->auth.time_offset;
+ 	}
+ 
+ 
+-- 
+2.35.1
+
+
+From e32528fd5abbace15b3aad2c7cec8d9c6ade7bf7 Mon Sep 17 00:00:00 2001
+From: Samuel Cabrero <scabrero@samba.org>
+Date: Wed, 13 Apr 2022 11:34:18 +0200
+Subject: [PATCH 4/4] s3:winbind: Remove no longer used domain's private_data
+ pointer
+
+BUG: https://bugzilla.samba.org/show_bug.cgi?id=15046
+
+Signed-off-by: Samuel Cabrero <scabrero@samba.org>
+Reviewed-by: Stefan Metzmacher <metze@samba.org>
+Reviewed-by: Andreas Schneider <asn@samba.org>
+(cherry picked from commit a6d6ae3cfcd64a85f82ec5b12253ca0e237d95bb)
+---
+ source3/winbindd/winbindd.h     | 4 ----
+ source3/winbindd/winbindd_ndr.c | 1 -
+ 2 files changed, 5 deletions(-)
+
+diff --git a/source3/winbindd/winbindd.h b/source3/winbindd/winbindd.h
+index 3cc88367b90..fe286a9a686 100644
+--- a/source3/winbindd/winbindd.h
++++ b/source3/winbindd/winbindd.h
+@@ -156,10 +156,6 @@ struct winbindd_domain {
+ 	 */
+ 	struct winbindd_methods *backend;
+ 
+-        /* Private data for the backends (used for connection cache) */
+-
+-	void *private_data;
+-
+ 	struct {
+ 		struct winbind_internal_pipes *samr_pipes;
+ 		struct ads_struct *ads_conn;
+diff --git a/source3/winbindd/winbindd_ndr.c b/source3/winbindd/winbindd_ndr.c
+index 94ce9d73747..b393586a692 100644
+--- a/source3/winbindd/winbindd_ndr.c
++++ b/source3/winbindd/winbindd_ndr.c
+@@ -143,7 +143,6 @@ void ndr_print_winbindd_domain(struct ndr_print *ndr,
+ 	ndr_print_time_t(ndr, "startup_time", r->startup_time);
+ 	ndr_print_bool(ndr, "startup", r->startup);
+ 	ndr_print_winbindd_methods(ndr, "backend", r->backend);
+-	ndr_print_ptr(ndr, "private_data", r->private_data);
+ 	ndr_print_ptr(ndr,
+ 		      "backend_data.samr_pipes",
+ 		      r->backend_data.samr_pipes);
+-- 
+2.35.1
+

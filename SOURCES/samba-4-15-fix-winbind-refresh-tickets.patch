@@ -1,0 +1,411 @@
+From a32bef9d1193e2bc253b7af8f4d0adb6476937f5 Mon Sep 17 00:00:00 2001
+From: Samuel Cabrero <scabrero@suse.de>
+Date: Tue, 22 Feb 2022 12:59:44 +0100
+Subject: [PATCH 1/6] s3:libads: Fix memory leak in kerberos_return_pac() error
+ path
+
+Signed-off-by: Samuel Cabrero <scabrero@samba.org>
+Reviewed-by: Stefan Metzmacher <metze@samba.org>
+Reviewed-by: Andreas Schneider <asn@samba.org>
+(cherry picked from commit 3dbcd20de98cd28683a9c248368e5082b6388111)
+---
+ source3/libads/authdata.c | 11 ++++++++---
+ 1 file changed, 8 insertions(+), 3 deletions(-)
+
+diff --git a/source3/libads/authdata.c b/source3/libads/authdata.c
+index dd21d895fc2..c048510d480 100644
+--- a/source3/libads/authdata.c
++++ b/source3/libads/authdata.c
+@@ -61,7 +61,10 @@ NTSTATUS kerberos_return_pac(TALLOC_CTX *mem_ctx,
+ {
+ 	krb5_error_code ret;
+ 	NTSTATUS status = NT_STATUS_INVALID_PARAMETER;
+-	DATA_BLOB tkt, tkt_wrapped, ap_rep, sesskey1;
++	DATA_BLOB tkt = data_blob_null;
++	DATA_BLOB tkt_wrapped = data_blob_null;
++	DATA_BLOB ap_rep = data_blob_null;
++	DATA_BLOB sesskey1 = data_blob_null;
+ 	const char *auth_princ = NULL;
+ 	const char *cc = "MEMORY:kerberos_return_pac";
+ 	struct auth_session_info *session_info;
+@@ -81,7 +84,8 @@ NTSTATUS kerberos_return_pac(TALLOC_CTX *mem_ctx,
+ 	ZERO_STRUCT(sesskey1);
+ 
+ 	if (!name || !pass) {
+-		return NT_STATUS_INVALID_PARAMETER;
++		status = NT_STATUS_INVALID_PARAMETER;
++		goto out;
+ 	}
+ 
+ 	if (cache_name) {
+@@ -131,7 +135,8 @@ NTSTATUS kerberos_return_pac(TALLOC_CTX *mem_ctx,
+ 
+ 	if (expire_time && renew_till_time &&
+ 	    (*expire_time == 0) && (*renew_till_time == 0)) {
+-		return NT_STATUS_INVALID_LOGON_TYPE;
++		status = NT_STATUS_INVALID_LOGON_TYPE;
++		goto out;
+ 	}
+ 
+ 	ret = ads_krb5_cli_get_ticket(mem_ctx,
+-- 
+2.35.1
+
+
+From d5a800beb60ee0b9310fa073c2e06a7dcbe65d5e Mon Sep 17 00:00:00 2001
+From: Samuel Cabrero <scabrero@suse.de>
+Date: Tue, 22 Feb 2022 13:00:05 +0100
+Subject: [PATCH 2/6] lib:krb5_wrap: Improve debug message and use newer debug
+ macro
+
+Signed-off-by: Samuel Cabrero <scabrero@samba.org>
+Reviewed-by: Stefan Metzmacher <metze@samba.org>
+Reviewed-by: Andreas Schneider <asn@samba.org>
+(cherry picked from commit ed14513be055cc56eb39785323df2c538a813865)
+---
+ lib/krb5_wrap/krb5_samba.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/lib/krb5_wrap/krb5_samba.c b/lib/krb5_wrap/krb5_samba.c
+index fff5b4e2a22..42d4b950f80 100644
+--- a/lib/krb5_wrap/krb5_samba.c
++++ b/lib/krb5_wrap/krb5_samba.c
+@@ -1079,7 +1079,7 @@ krb5_error_code smb_krb5_renew_ticket(const char *ccache_string,
+ 		goto done;
+ 	}
+ 
+-	DEBUG(10,("smb_krb5_renew_ticket: using %s as ccache\n", ccache_string));
++	DBG_DEBUG("Using %s as ccache for '%s'\n", ccache_string, client_string);
+ 
+ 	/* FIXME: we should not fall back to defaults */
+ 	ret = krb5_cc_resolve(context, discard_const_p(char, ccache_string), &ccache);
+-- 
+2.35.1
+
+
+From 79d08465f66df67b69fdafed8eec48290acf24b9 Mon Sep 17 00:00:00 2001
+From: Samuel Cabrero <scabrero@suse.de>
+Date: Tue, 22 Feb 2022 14:28:28 +0100
+Subject: [PATCH 3/6] lib:krb5_wrap: Fix wrong debug message and use newer
+ debug macro
+
+Signed-off-by: Samuel Cabrero <scabrero@samba.org>
+Reviewed-by: Stefan Metzmacher <metze@samba.org>
+Reviewed-by: Andreas Schneider <asn@samba.org>
+(cherry picked from commit 1b5b4107a5081f15ba215f3025056d509fcfcf2a)
+---
+ lib/krb5_wrap/krb5_samba.c | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/lib/krb5_wrap/krb5_samba.c b/lib/krb5_wrap/krb5_samba.c
+index 42d4b950f80..76c2dcd2126 100644
+--- a/lib/krb5_wrap/krb5_samba.c
++++ b/lib/krb5_wrap/krb5_samba.c
+@@ -1101,7 +1101,10 @@ krb5_error_code smb_krb5_renew_ticket(const char *ccache_string,
+ 
+ 	ret = krb5_get_renewed_creds(context, &creds, client, ccache, discard_const_p(char, service_string));
+ 	if (ret) {
+-		DEBUG(10,("smb_krb5_renew_ticket: krb5_get_kdc_cred failed: %s\n", error_message(ret)));
++		DBG_DEBUG("krb5_get_renewed_creds using ccache '%s' "
++			  "for client '%s' and service '%s' failed: %s\n",
++			  ccache_string, client_string, service_string,
++			  error_message(ret));
+ 		goto done;
+ 	}
+ 
+-- 
+2.35.1
+
+
+From 00418e5b78fa4361c0386c13374154d310426f77 Mon Sep 17 00:00:00 2001
+From: Samuel Cabrero <scabrero@suse.de>
+Date: Tue, 22 Feb 2022 13:08:56 +0100
+Subject: [PATCH 4/6] s3:libads: Return canonical principal and realm from
+ kerberos_return_pac()
+
+BUG: https://bugzilla.samba.org/show_bug.cgi?id=14979
+
+Signed-off-by: Samuel Cabrero <scabrero@samba.org>
+Reviewed-by: Stefan Metzmacher <metze@samba.org>
+Reviewed-by: Andreas Schneider <asn@samba.org>
+(cherry picked from commit 00b1f44a7e8f66976757535bcbc6bea97fb1c29f)
+---
+ source3/libads/authdata.c       | 22 +++++++++++++++++++++-
+ source3/libads/kerberos_proto.h |  2 ++
+ source3/utils/net_ads.c         |  2 ++
+ source3/winbindd/winbindd_pam.c |  2 ++
+ 4 files changed, 27 insertions(+), 1 deletion(-)
+
+diff --git a/source3/libads/authdata.c b/source3/libads/authdata.c
+index c048510d480..bf9a2335445 100644
+--- a/source3/libads/authdata.c
++++ b/source3/libads/authdata.c
+@@ -57,6 +57,8 @@ NTSTATUS kerberos_return_pac(TALLOC_CTX *mem_ctx,
+ 			     time_t renewable_time,
+ 			     const char *impersonate_princ_s,
+ 			     const char *local_service,
++			     char **_canon_principal,
++			     char **_canon_realm,
+ 			     struct PAC_DATA_CTR **_pac_data_ctr)
+ {
+ 	krb5_error_code ret;
+@@ -75,6 +77,8 @@ NTSTATUS kerberos_return_pac(TALLOC_CTX *mem_ctx,
+ 	struct auth4_context *auth_context;
+ 	struct loadparm_context *lp_ctx;
+ 	struct PAC_DATA_CTR *pac_data_ctr = NULL;
++	char *canon_principal = NULL;
++	char *canon_realm = NULL;
+ 
+ 	TALLOC_CTX *tmp_ctx = talloc_new(mem_ctx);
+ 	NT_STATUS_HAVE_NO_MEMORY(tmp_ctx);
+@@ -88,6 +92,14 @@ NTSTATUS kerberos_return_pac(TALLOC_CTX *mem_ctx,
+ 		goto out;
+ 	}
+ 
++	if (_canon_principal != NULL) {
++		*_canon_principal = NULL;
++	}
++
++	if (_canon_realm != NULL) {
++		*_canon_realm = NULL;
++	}
++
+ 	if (cache_name) {
+ 		cc = cache_name;
+ 	}
+@@ -109,7 +121,9 @@ NTSTATUS kerberos_return_pac(TALLOC_CTX *mem_ctx,
+ 					  request_pac,
+ 					  add_netbios_addr,
+ 					  renewable_time,
+-					  NULL, NULL, NULL,
++					  tmp_ctx,
++					  &canon_principal,
++					  &canon_realm,
+ 					  &status);
+ 	if (ret) {
+ 		DEBUG(1,("kinit failed for '%s' with: %s (%d)\n",
+@@ -243,6 +257,12 @@ NTSTATUS kerberos_return_pac(TALLOC_CTX *mem_ctx,
+ 	}
+ 
+ 	*_pac_data_ctr = talloc_move(mem_ctx, &pac_data_ctr);
++	if (_canon_principal != NULL) {
++		*_canon_principal = talloc_move(mem_ctx, &canon_principal);
++	}
++	if (_canon_realm != NULL) {
++		*_canon_realm = talloc_move(mem_ctx, &canon_realm);
++	}
+ 
+ out:
+ 	talloc_free(tmp_ctx);
+diff --git a/source3/libads/kerberos_proto.h b/source3/libads/kerberos_proto.h
+index 3d7b5bc074b..807381248c8 100644
+--- a/source3/libads/kerberos_proto.h
++++ b/source3/libads/kerberos_proto.h
+@@ -78,6 +78,8 @@ NTSTATUS kerberos_return_pac(TALLOC_CTX *mem_ctx,
+ 			     time_t renewable_time,
+ 			     const char *impersonate_princ_s,
+ 			     const char *local_service,
++			     char **_canon_principal,
++			     char **_canon_realm,
+ 			     struct PAC_DATA_CTR **pac_data_ctr);
+ 
+ /* The following definitions come from libads/krb5_setpw.c  */
+diff --git a/source3/utils/net_ads.c b/source3/utils/net_ads.c
+index 8f993f9ba4c..c41fb0afe9c 100644
+--- a/source3/utils/net_ads.c
++++ b/source3/utils/net_ads.c
+@@ -3273,6 +3273,8 @@ static int net_ads_kerberos_pac_common(struct net_context *c, int argc, const ch
+ 				     2592000, /* one month */
+ 				     impersonate_princ_s,
+ 				     local_service,
++				     NULL,
++				     NULL,
+ 				     pac_data_ctr);
+ 	if (!NT_STATUS_IS_OK(status)) {
+ 		d_printf(_("failed to query kerberos PAC: %s\n"),
+diff --git a/source3/winbindd/winbindd_pam.c b/source3/winbindd/winbindd_pam.c
+index 7606bfb4ecd..025a5cbc111 100644
+--- a/source3/winbindd/winbindd_pam.c
++++ b/source3/winbindd/winbindd_pam.c
+@@ -789,6 +789,8 @@ static NTSTATUS winbindd_raw_kerberos_login(TALLOC_CTX *mem_ctx,
+ 				     WINBINDD_PAM_AUTH_KRB5_RENEW_TIME,
+ 				     NULL,
+ 				     local_service,
++				     NULL,
++				     NULL,
+ 				     &pac_data_ctr);
+ 	if (user_ccache_file != NULL) {
+ 		gain_root_privilege();
+-- 
+2.35.1
+
+
+From d754753ab8edf6dde241d91442fe6afba8993de5 Mon Sep 17 00:00:00 2001
+From: Samuel Cabrero <scabrero@suse.de>
+Date: Tue, 22 Feb 2022 13:19:02 +0100
+Subject: [PATCH 5/6] s3:winbind: Store canonical principal and realm in ccache
+ entry
+
+They will be used later to refresh the tickets.
+
+BUG: https://bugzilla.samba.org/show_bug.cgi?id=14979
+
+Signed-off-by: Samuel Cabrero <scabrero@samba.org>
+Reviewed-by: Stefan Metzmacher <metze@samba.org>
+Reviewed-by: Andreas Schneider <asn@samba.org>
+(cherry picked from commit 0f4f330773d272b4d28ff3ba5a41bdd4ba569c8b)
+---
+ source3/winbindd/winbindd.h            |  2 ++
+ source3/winbindd/winbindd_cred_cache.c | 16 +++++++++++++++-
+ source3/winbindd/winbindd_pam.c        | 14 ++++++++++----
+ source3/winbindd/winbindd_proto.h      |  4 +++-
+ 4 files changed, 30 insertions(+), 6 deletions(-)
+
+diff --git a/source3/winbindd/winbindd.h b/source3/winbindd/winbindd.h
+index a6b2238cec1..dac4a1fa927 100644
+--- a/source3/winbindd/winbindd.h
++++ b/source3/winbindd/winbindd.h
+@@ -344,6 +344,8 @@ struct WINBINDD_CCACHE_ENTRY {
+ 	const char *service;
+ 	const char *username;
+ 	const char *realm;
++	const char *canon_principal;
++	const char *canon_realm;
+ 	struct WINBINDD_MEMORY_CREDS *cred_ptr;
+ 	int ref_count;
+ 	uid_t uid;
+diff --git a/source3/winbindd/winbindd_cred_cache.c b/source3/winbindd/winbindd_cred_cache.c
+index c3077e21989..88847b1ab97 100644
+--- a/source3/winbindd/winbindd_cred_cache.c
++++ b/source3/winbindd/winbindd_cred_cache.c
+@@ -501,7 +501,9 @@ NTSTATUS add_ccache_to_list(const char *princ_name,
+ 			    time_t create_time,
+ 			    time_t ticket_end,
+ 			    time_t renew_until,
+-			    bool postponed_request)
++			    bool postponed_request,
++			    const char *canon_principal,
++			    const char *canon_realm)
+ {
+ 	struct WINBINDD_CCACHE_ENTRY *entry = NULL;
+ 	struct timeval t;
+@@ -617,6 +619,18 @@ NTSTATUS add_ccache_to_list(const char *princ_name,
+ 			goto no_mem;
+ 		}
+ 	}
++	if (canon_principal != NULL) {
++		entry->canon_principal = talloc_strdup(entry, canon_principal);
++		if (entry->canon_principal == NULL) {
++			goto no_mem;
++		}
++	}
++	if (canon_realm != NULL) {
++		entry->canon_realm = talloc_strdup(entry, canon_realm);
++		if (entry->canon_realm == NULL) {
++			goto no_mem;
++		}
++	}
+ 
+ 	entry->ccname = talloc_strdup(entry, ccname);
+ 	if (!entry->ccname) {
+diff --git a/source3/winbindd/winbindd_pam.c b/source3/winbindd/winbindd_pam.c
+index 025a5cbc111..a24cef78440 100644
+--- a/source3/winbindd/winbindd_pam.c
++++ b/source3/winbindd/winbindd_pam.c
+@@ -687,6 +687,8 @@ static NTSTATUS winbindd_raw_kerberos_login(TALLOC_CTX *mem_ctx,
+ 	const char *local_service;
+ 	uint32_t i;
+ 	struct netr_SamInfo6 *info6_copy = NULL;
++	char *canon_principal = NULL;
++	char *canon_realm = NULL;
+ 	bool ok;
+ 
+ 	*info6 = NULL;
+@@ -789,8 +791,8 @@ static NTSTATUS winbindd_raw_kerberos_login(TALLOC_CTX *mem_ctx,
+ 				     WINBINDD_PAM_AUTH_KRB5_RENEW_TIME,
+ 				     NULL,
+ 				     local_service,
+-				     NULL,
+-				     NULL,
++				     &canon_principal,
++				     &canon_realm,
+ 				     &pac_data_ctr);
+ 	if (user_ccache_file != NULL) {
+ 		gain_root_privilege();
+@@ -856,7 +858,9 @@ static NTSTATUS winbindd_raw_kerberos_login(TALLOC_CTX *mem_ctx,
+ 					    time(NULL),
+ 					    ticket_lifetime,
+ 					    renewal_until,
+-					    false);
++					    false,
++					    canon_principal,
++					    canon_realm);
+ 
+ 		if (!NT_STATUS_IS_OK(result)) {
+ 			DEBUG(10,("winbindd_raw_kerberos_login: failed to add ccache to list: %s\n",
+@@ -1233,7 +1237,9 @@ static NTSTATUS winbindd_dual_pam_auth_cached(struct winbindd_domain *domain,
+ 							    time(NULL),
+ 							    time(NULL) + lp_winbind_cache_time(),
+ 							    time(NULL) + WINBINDD_PAM_AUTH_KRB5_RENEW_TIME,
+-							    true);
++							    true,
++							    principal_s,
++							    realm);
+ 
+ 				if (!NT_STATUS_IS_OK(result)) {
+ 					DEBUG(10,("winbindd_dual_pam_auth_cached: failed "
+diff --git a/source3/winbindd/winbindd_proto.h b/source3/winbindd/winbindd_proto.h
+index c0d653a6d77..16c23f3de40 100644
+--- a/source3/winbindd/winbindd_proto.h
++++ b/source3/winbindd/winbindd_proto.h
+@@ -236,7 +236,9 @@ NTSTATUS add_ccache_to_list(const char *princ_name,
+ 			    time_t create_time,
+ 			    time_t ticket_end,
+ 			    time_t renew_until,
+-			    bool postponed_request);
++			    bool postponed_request,
++			    const char *canon_principal,
++			    const char *canon_realm);
+ NTSTATUS remove_ccache(const char *username);
+ struct WINBINDD_MEMORY_CREDS *find_memory_creds_by_name(const char *username);
+ NTSTATUS winbindd_add_memory_creds(const char *username,
+-- 
+2.35.1
+
+
+From 82452eb54758de50700776fb92b7e7af892fdaea Mon Sep 17 00:00:00 2001
+From: Samuel Cabrero <scabrero@suse.de>
+Date: Tue, 22 Feb 2022 14:28:44 +0100
+Subject: [PATCH 6/6] s3:winbind: Use the canonical principal name to renew the
+ credentials
+
+The principal name stored in the winbindd ccache entry might be an
+enterprise principal name if enterprise principals are enabled. Use
+the canonical name to renew the credentials.
+
+BUG: https://bugzilla.samba.org/show_bug.cgi?id=14979
+
+Signed-off-by: Samuel Cabrero <scabrero@samba.org>
+Reviewed-by: Stefan Metzmacher <metze@samba.org>
+Reviewed-by: Andreas Schneider <asn@samba.org>
+(cherry picked from commit 8246ccc23d064147412bb3475e6431a9fffc0d27)
+---
+ source3/winbindd/winbindd_cred_cache.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/source3/winbindd/winbindd_cred_cache.c b/source3/winbindd/winbindd_cred_cache.c
+index 88847b1ab97..6c65db6a73f 100644
+--- a/source3/winbindd/winbindd_cred_cache.c
++++ b/source3/winbindd/winbindd_cred_cache.c
+@@ -209,7 +209,7 @@ rekinit:
+ 	set_effective_uid(entry->uid);
+ 
+ 	ret = smb_krb5_renew_ticket(entry->ccname,
+-				    entry->principal_name,
++				    entry->canon_principal,
+ 				    entry->service,
+ 				    &new_start);
+ #if defined(DEBUG_KRB5_TKT_RENEWAL)
+-- 
+2.35.1
+
