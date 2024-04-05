@@ -135,7 +135,7 @@
 %define samba_requires_eq()  %(LC_ALL="C" echo '%*' | xargs -r rpm -q --qf 'Requires: %%{name} = %%{epoch}:%%{version}\\n' | sed -e 's/ (none):/ /' -e 's/ 0:/ /' | grep -v "is not")
 
 %global samba_version 4.17.5
-%global baserelease 4
+%global baserelease 5
 # This should be rc1 or %%nil
 %global pre_release %nil
 
@@ -231,15 +231,15 @@ Source17:       samba-usershares-systemd-sysusers.conf
 Source201:      README.downgrade
 Source202:      samba.abignore
 
-Patch0:         samba-4.17-fix-netlogon-capability-level2.patch
-Patch1:         CVE-2023-3347-signing-4.17-01.patch
-Patch2:         01-CVE-2023-3961.patch
-Patch3:         02-CVE-2023-4091.patch
-Patch4:         03-CVE-2023-42669.patch
-Patch5:         05-CVE-2022-2127.patch
-Patch6:         06-CVE-2023-34966.patch
-Patch7:         07-CVE-2023-34967.patch
-#Patch8:         08-CVE-2023-34968.patch # TODO: Need to get this sorted. Patch apply returns 0, but patch is not applied.
+Patch0:         0001-samba-4.17-fix-netlogon-capability-level2.patch
+Patch1:         0002-CVE-2023-3347-signing-4.17-01.patch
+Patch2:         0003-CVE-2023-3961.patch
+Patch3:         0004-CVE-2023-4091.patch
+Patch4:         0005-CVE-2023-42669.patch
+Patch5:         0006-CVE-2022-2127.patch
+Patch6:         0007-CVE-2023-34966.patch
+Patch7:         0008-CVE-2023-34967.patch
+Patch8:         0009-CVE-2023-34968.patch
 
 Requires(pre): /usr/sbin/groupadd
 
@@ -4307,7 +4307,10 @@ fi
 %endif
 
 %changelog
-* Thu Apr 04 2024 Matt Hink <mhink@ciq.com> - 4.17.5-4
+* Tue Mar 26 2024 Matt Hink <mhink@ciq.com> - 4.17.5-5
+- Fix CVE-2023-34968
+
+* Tue Mar 26 2024 Matt Hink <mhink@ciq.com> - 4.17.5-4
 - Fix CVE-2023-3961
 - Fix CVE-2023-4091
 - Fix CVE-2023-42669

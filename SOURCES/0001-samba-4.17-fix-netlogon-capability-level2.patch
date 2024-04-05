@@ -1,0 +1,216 @@
+From eb056431a0b24f9f988ad5ccfb55fc7a587c3c84 Mon Sep 17 00:00:00 2001
+From: Jeremy Allison <jallison@ciq.com>
+Date: Thu, 4 Apr 2024 18:02:57 -0700
+Subject: [PATCH 01/09] samba-4.17-fix-netlogon-capability-level2.patch
+
+---
+ librpc/idl/netlogon.idl                       |  1 +
+ source3/rpc_server/netlogon/srv_netlog_nt.c   | 29 ++++++-
+ source4/rpc_server/netlogon/dcerpc_netlogon.c | 28 ++++++-
+ source4/torture/rpc/netlogon.c                | 77 ++++++++++++++++++-
+ 4 files changed, 126 insertions(+), 9 deletions(-)
+
+diff --git a/librpc/idl/netlogon.idl b/librpc/idl/netlogon.idl
+index e563e11..c77151a 100644
+--- a/librpc/idl/netlogon.idl
++++ b/librpc/idl/netlogon.idl
+@@ -1241,6 +1241,7 @@ interface netlogon
+ 	/* Function 0x15 */
+ 	typedef [switch_type(uint32)] union {
+ 		[case(1)] netr_NegotiateFlags server_capabilities;
++		[case(2)] netr_NegotiateFlags server_capabilities;
+ 	} netr_Capabilities;
+ 
+ 	NTSTATUS netr_LogonGetCapabilities(
+diff --git a/source3/rpc_server/netlogon/srv_netlog_nt.c b/source3/rpc_server/netlogon/srv_netlog_nt.c
+index 83318ff..c91eeed 100644
+--- a/source3/rpc_server/netlogon/srv_netlog_nt.c
++++ b/source3/rpc_server/netlogon/srv_netlog_nt.c
+@@ -2286,6 +2286,31 @@ NTSTATUS _netr_LogonGetCapabilities(struct pipes_struct *p,
+ 	struct netlogon_creds_CredentialState *creds;
+ 	NTSTATUS status;
+ 
++	switch (r->in.query_level) {
++	case 1:
++		break;
++	case 2:
++		/*
++		 * Until we know the details behind KB5028166
++		 * just return DCERPC_NCA_S_FAULT_INVALID_TAG
++		 * like an unpatched Windows Server.
++		 */
++		FALL_THROUGH;
++	default:
++		/*
++		 * There would not be a way to marshall the
++		 * the response. Which would mean our final
++		 * ndr_push would fail an we would return
++		 * an RPC-level fault with DCERPC_FAULT_BAD_STUB_DATA.
++		 *
++		 * But it's important to match a Windows server
++		 * especially before KB5028166, see also our bug #15418
++		 * Otherwise Windows client would stop talking to us.
++		 */
++		p->fault_state = DCERPC_NCA_S_FAULT_INVALID_TAG;
++		return NT_STATUS_NOT_SUPPORTED;
++	}
++
+ 	become_root();
+ 	status = dcesrv_netr_creds_server_step_check(p->dce_call,
+ 						p->mem_ctx,
+@@ -2298,10 +2323,6 @@ NTSTATUS _netr_LogonGetCapabilities(struct pipes_struct *p,
+ 		return status;
+ 	}
+ 
+-	if (r->in.query_level != 1) {
+-		return NT_STATUS_NOT_SUPPORTED;
+-	}
+-
+ 	r->out.capabilities->server_capabilities = creds->negotiate_flags;
+ 
+ 	return NT_STATUS_OK;
+diff --git a/source4/rpc_server/netlogon/dcerpc_netlogon.c b/source4/rpc_server/netlogon/dcerpc_netlogon.c
+index 314b469..e203e04 100644
+--- a/source4/rpc_server/netlogon/dcerpc_netlogon.c
++++ b/source4/rpc_server/netlogon/dcerpc_netlogon.c
+@@ -2359,6 +2359,30 @@ static NTSTATUS dcesrv_netr_LogonGetCapabilities(struct dcesrv_call_state *dce_c
+ 	struct netlogon_creds_CredentialState *creds;
+ 	NTSTATUS status;
+ 
++	switch (r->in.query_level) {
++	case 1:
++		break;
++	case 2:
++		/*
++		 * Until we know the details behind KB5028166
++		 * just return DCERPC_NCA_S_FAULT_INVALID_TAG
++		 * like an unpatched Windows Server.
++		 */
++		FALL_THROUGH;
++	default:
++		/*
++		 * There would not be a way to marshall the
++		 * the response. Which would mean our final
++		 * ndr_push would fail an we would return
++		 * an RPC-level fault with DCERPC_FAULT_BAD_STUB_DATA.
++		 *
++		 * But it's important to match a Windows server
++		 * especially before KB5028166, see also our bug #15418
++		 * Otherwise Windows client would stop talking to us.
++		 */
++		DCESRV_FAULT(DCERPC_NCA_S_FAULT_INVALID_TAG);
++	}
++
+ 	status = dcesrv_netr_creds_server_step_check(dce_call,
+ 						     mem_ctx,
+ 						     r->in.computer_name,
+@@ -2370,10 +2394,6 @@ static NTSTATUS dcesrv_netr_LogonGetCapabilities(struct dcesrv_call_state *dce_c
+ 	}
+ 	NT_STATUS_NOT_OK_RETURN(status);
+ 
+-	if (r->in.query_level != 1) {
+-		return NT_STATUS_NOT_SUPPORTED;
+-	}
+-
+ 	r->out.capabilities->server_capabilities = creds->negotiate_flags;
+ 
+ 	return NT_STATUS_OK;
+diff --git a/source4/torture/rpc/netlogon.c b/source4/torture/rpc/netlogon.c
+index 1f068eb..a3d190f 100644
+--- a/source4/torture/rpc/netlogon.c
++++ b/source4/torture/rpc/netlogon.c
+@@ -2056,8 +2056,47 @@ bool test_netlogon_capabilities(struct dcerpc_pipe *p, struct torture_context *t
+ 	r.out.capabilities = &capabilities;
+ 	r.out.return_authenticator = &return_auth;
+ 
+-	torture_comment(tctx, "Testing LogonGetCapabilities\n");
++	torture_comment(tctx, "Testing LogonGetCapabilities with query_level=0\n");
+ 
++	r.in.query_level = 0;
++	ZERO_STRUCT(return_auth);
++
++	/*
++	 * we need to operate on a temporary copy of creds
++	 * because dcerpc_netr_LogonGetCapabilities with
++	 * an unknown query level returns DCERPC_NCA_S_FAULT_INVALID_TAG
++	 * => NT_STATUS_RPC_ENUM_VALUE_OUT_OF_RANGE
++	 * without looking a the authenticator.
++	 */
++	tmp_creds = *creds;
++	netlogon_creds_client_authenticator(&tmp_creds, &auth);
++
++	status = dcerpc_netr_LogonGetCapabilities_r(b, tctx, &r);
++	torture_assert_ntstatus_equal(tctx, status, NT_STATUS_RPC_ENUM_VALUE_OUT_OF_RANGE,
++				      "LogonGetCapabilities query_level=0 failed");
++
++	torture_comment(tctx, "Testing LogonGetCapabilities with query_level=3\n");
++
++	r.in.query_level = 3;
++	ZERO_STRUCT(return_auth);
++
++	/*
++	 * we need to operate on a temporary copy of creds
++	 * because dcerpc_netr_LogonGetCapabilities with
++	 * an unknown query level returns DCERPC_NCA_S_FAULT_INVALID_TAG
++	 * => NT_STATUS_RPC_ENUM_VALUE_OUT_OF_RANGE
++	 * without looking a the authenticator.
++	 */
++	tmp_creds = *creds;
++	netlogon_creds_client_authenticator(&tmp_creds, &auth);
++
++	status = dcerpc_netr_LogonGetCapabilities_r(b, tctx, &r);
++	torture_assert_ntstatus_equal(tctx, status, NT_STATUS_RPC_ENUM_VALUE_OUT_OF_RANGE,
++				      "LogonGetCapabilities query_level=0 failed");
++
++	torture_comment(tctx, "Testing LogonGetCapabilities with query_level=1\n");
++
++	r.in.query_level = 1;
+ 	ZERO_STRUCT(return_auth);
+ 
+ 	/*
+@@ -2077,6 +2116,42 @@ bool test_netlogon_capabilities(struct dcerpc_pipe *p, struct torture_context *t
+ 
+ 	*creds = tmp_creds;
+ 
++	torture_assert(tctx, netlogon_creds_client_check(creds,
++							 &r.out.return_authenticator->cred),
++		       "Credential chaining failed");
++
++	torture_assert_int_equal(tctx, creds->negotiate_flags,
++				 capabilities.server_capabilities,
++				 "negotiate flags");
++
++	torture_comment(tctx, "Testing LogonGetCapabilities with query_level=2\n");
++
++	r.in.query_level = 2;
++	ZERO_STRUCT(return_auth);
++
++	/*
++	 * we need to operate on a temporary copy of creds
++	 * because dcerpc_netr_LogonGetCapabilities with
++	 * an query level 2 may returns DCERPC_NCA_S_FAULT_INVALID_TAG
++	 * => NT_STATUS_RPC_ENUM_VALUE_OUT_OF_RANGE
++	 * without looking a the authenticator.
++	 */
++	tmp_creds = *creds;
++	netlogon_creds_client_authenticator(&tmp_creds, &auth);
++
++	status = dcerpc_netr_LogonGetCapabilities_r(b, tctx, &r);
++	if (NT_STATUS_EQUAL(status, NT_STATUS_RPC_ENUM_VALUE_OUT_OF_RANGE)) {
++		/*
++		 * an server without KB5028166 returns
++		 * DCERPC_NCA_S_FAULT_INVALID_TAG =>
++		 * NT_STATUS_RPC_ENUM_VALUE_OUT_OF_RANGE
++		 */
++		return true;
++	}
++	torture_assert_ntstatus_ok(tctx, status, "LogonGetCapabilities query_level=2 failed");
++
++	*creds = tmp_creds;
++
+ 	torture_assert(tctx, netlogon_creds_client_check(creds,
+ 							 &r.out.return_authenticator->cred),
+ 		       "Credential chaining failed");
+-- 
+2.39.3
+
