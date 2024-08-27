@@ -135,7 +135,7 @@
 %define samba_requires_eq()  %(LC_ALL="C" echo '%*' | xargs -r rpm -q --qf 'Requires: %%{name} = %%{epoch}:%%{version}\\n' | sed -e 's/ (none):/ /' -e 's/ 0:/ /' | grep -v "is not")
 
 %global samba_version 4.17.5
-%global baserelease 104
+%global baserelease 105
 # This should be rc1 or %%nil
 %global pre_release %nil
 
@@ -236,6 +236,7 @@ Patch1:         CVE-2023-3347-signing-4.17-01.patch
 Patch2:         01-CVE-2023-3961.patch
 Patch3:         02-CVE-2023-4091.patch
 Patch4:         03-CVE-2023-42669.patch
+Patch5:         04-CVE-2023-34966.patch
 
 Requires(pre): /usr/sbin/groupadd
 
@@ -4303,6 +4304,9 @@ fi
 %endif
 
 %changelog
+* Mon Aug 26 2024 Matt Hink <mhink@ciq.com> - 4.17.5-105
+- Fix CVE-2023-34966
+
 * Tue Apr 02 2024 Matt Hink <mhink@ciq.com> - 4.17.5-104
 - Fix CVE-2023-3961
 - Fix CVE-2023-4091
