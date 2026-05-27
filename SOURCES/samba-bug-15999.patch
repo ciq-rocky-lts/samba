@@ -1,0 +1,268 @@
+From c38d2abfbf4aa6faea374fcdaff05bd864c2d5a6 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Pavel=20Filipensk=C3=BD?= <pfilipensky@samba.org>
+Date: Wed, 18 Mar 2026 20:24:37 +0100
+Subject: [PATCH 1/3] s3:libnet: Fix DC numeric ip handling
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+This is fixing regression introduced via 82f53c8
+
+BUG: https://bugzilla.samba.org/show_bug.cgi?id=15999
+
+Signed-off-by: Pavel Filipenský <pfilipensky@samba.org>
+Reviewed-by: Andreas Schneider <asn@samba.org>
+(cherry picked from commit a6938e9fdf59094da359637eb1f7e847a531ba2e)
+---
+ source3/libnet/libnet_join.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/source3/libnet/libnet_join.c b/source3/libnet/libnet_join.c
+index a3a08e3..edd65e0 100644
+--- a/source3/libnet/libnet_join.c
++++ b/source3/libnet/libnet_join.c
+@@ -2689,7 +2689,7 @@ static WERROR libnet_DomainJoin(TALLOC_CTX *mem_ctx,
+ 		struct sockaddr_storage ss = {0};
+ 		const char *numeric_dcip = info->dc_address + 2;
+ 
+-		if (numeric_dcip[0] == '\0') {
++		if (numeric_dcip[0] != '\0') {
+ 			if (!interpret_string_addr(&ss, numeric_dcip,
+ 						   AI_NUMERICHOST)) {
+ 				DBG_ERR(
+-- 
+2.47.3
+
+
+From eca81cbbb1b035cad7a24ce2dabc1a3253901c19 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Pavel=20Filipensk=C3=BD?= <pfilipensky@samba.org>
+Date: Mon, 23 Mar 2026 19:03:34 +0100
+Subject: [PATCH 2/3] s3:libads: Allow to specify 'dns_lookup_kdc' in krb5.conf
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+BUG: https://bugzilla.samba.org/show_bug.cgi?id=15999
+
+Signed-off-by: Pavel Filipenský <pfilipensky@samba.org>
+Reviewed-by: Andreas Schneider <asn@samba.org>
+(cherry picked from commit 689f9d49c3715240a28d9d898c6b83be4ee18971)
+---
+ source3/libads/kerberos.c       | 23 ++++++++++++++++-------
+ source3/libads/kerberos_proto.h | 33 +++++++++++++++++++++++++++++----
+ 2 files changed, 45 insertions(+), 11 deletions(-)
+
+diff --git a/source3/libads/kerberos.c b/source3/libads/kerberos.c
+index e0d8fe6..aeebc21 100644
+--- a/source3/libads/kerberos.c
++++ b/source3/libads/kerberos.c
+@@ -692,10 +692,12 @@ static char *get_enctypes(TALLOC_CTX *mem_ctx)
+ }
+ #endif
+ 
+-bool create_local_private_krb5_conf_for_domain(const char *realm,
+-						const char *domain,
+-						const char *sitename,
+-					        const struct sockaddr_storage *pss)
++bool create_local_private_krb5_conf_for_domain_internal(
++	const char *realm,
++	const char *domain,
++	const char *sitename,
++	const struct sockaddr_storage *pss,
++	bool dns_lookup_kdc)
+ {
+ 	char *dname;
+ 	char *tmpname = NULL;
+@@ -771,10 +773,16 @@ bool create_local_private_krb5_conf_for_domain(const char *realm,
+ #endif
+ 
+ 	/*
+-	 * We are setting 'dns_lookup_kdc' to true, because we want to lookup
+-	 * KDCs which are not configured via DNS SRV records, eg. if we do:
++	 * Normally 'dns_lookup_kdc' should be set to true, because we want to
++	 * also lookup KDCs via DNS SRV records, e.g. cross domain scenario:
+ 	 *
+ 	 *     net ads join -Uadmin@otherdomain
++	 *
++	 * However, during domain join we need to set it to false when we
++	 * reconnect using the freshly created machine account credentials.
++	 * With dns_lookup_kdc = true, Kerberos may pick a different DC
++	 * for the TCP retry (after UDP response is too large), and that DC
++	 * might not have replicated the new machine account yet.
+ 	 */
+ 	file_contents =
+ 	    talloc_asprintf(fname,
+@@ -782,7 +790,7 @@ bool create_local_private_krb5_conf_for_domain(const char *realm,
+ 			    "\tdefault_realm = %s\n"
+ 			    "%s"
+ 			    "\tdns_lookup_realm = false\n"
+-			    "\tdns_lookup_kdc = true\n\n"
++			    "\tdns_lookup_kdc = %s\n\n"
+ 			    "[realms]\n\t%s = {\n"
+ 			    "%s\t}\n"
+ 			    "\t%s = {\n"
+@@ -790,6 +798,7 @@ bool create_local_private_krb5_conf_for_domain(const char *realm,
+ 			    "%s\n",
+ 			    realm_upper,
+ 			    enctypes,
++			    dns_lookup_kdc ? "true" : "false",
+ 			    realm_upper,
+ 			    kdc_ip_string,
+ 			    domain,
+diff --git a/source3/libads/kerberos_proto.h b/source3/libads/kerberos_proto.h
+index d3eea0f..0666734 100644
+--- a/source3/libads/kerberos_proto.h
++++ b/source3/libads/kerberos_proto.h
+@@ -59,10 +59,35 @@ int kerberos_kinit_password(const char *principal,
+ 			    const char *password,
+ 			    int time_offset,
+ 			    const char *cache_name);
+-bool create_local_private_krb5_conf_for_domain(const char *realm,
+-						const char *domain,
+-						const char *sitename,
+-					        const struct sockaddr_storage *pss);
++
++bool create_local_private_krb5_conf_for_domain_internal(
++	const char *realm,
++	const char *domain,
++	const char *sitename,
++	const struct sockaddr_storage *pss,
++	bool dns_lookup_kdc);
++
++/* Create krb5.conf that allows DC lookup using DNS. */
++static inline bool create_local_private_krb5_conf_for_domain(
++	const char *realm,
++	const char *domain,
++	const char *sitename,
++	const struct sockaddr_storage *pss)
++{
++	return create_local_private_krb5_conf_for_domain_internal(
++		realm, domain, sitename, pss, true);
++}
++
++/* Create krb5.conf that disables DC lookup using DNS - needed during join. */
++static inline bool create_local_private_krb5_conf_for_domain_join(
++	const char *realm,
++	const char *domain,
++	const char *sitename,
++	const struct sockaddr_storage *pss)
++{
++	return create_local_private_krb5_conf_for_domain_internal(
++		realm, domain, sitename, pss, false);
++}
+ 
+ /* The following definitions come from libads/authdata.c  */
+ 
+-- 
+2.47.3
+
+
+From 758f6a03c4d15c702512c5917b3ec2a07a6d4f39 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Pavel=20Filipensk=C3=BD?= <pfilipensky@samba.org>
+Date: Mon, 23 Mar 2026 19:05:31 +0100
+Subject: [PATCH 3/3] s3:libads: Set dns_lookup_kdc=false during net ads join
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+BUG: https://bugzilla.samba.org/show_bug.cgi?id=15999
+
+Signed-off-by: Pavel Filipenský <pfilipensky@samba.org>
+Reviewed-by: Andreas Schneider <asn@samba.org>
+
+Autobuild-User(master): Pavel Filipensky <pfilipensky@samba.org>
+Autobuild-Date(master): Tue Apr  7 14:09:40 UTC 2026 on atb-devel-224
+
+(cherry picked from commit 3459eeb20ea54f4f412ec3d1fe3d9e98b94e1ca4)
+---
+ source3/libnet/libnet_join.c | 60 +++++++++++++++++++++++++++++++++++-
+ 1 file changed, 59 insertions(+), 1 deletion(-)
+
+diff --git a/source3/libnet/libnet_join.c b/source3/libnet/libnet_join.c
+index edd65e0..9da3c31 100644
+--- a/source3/libnet/libnet_join.c
++++ b/source3/libnet/libnet_join.c
+@@ -2927,6 +2927,10 @@ WERROR libnet_Join(TALLOC_CTX *mem_ctx,
+ 		   struct libnet_JoinCtx *r)
+ {
+ 	WERROR werr;
++#ifdef HAVE_ADS
++	struct sockaddr_storage dc_ss = {0};
++	bool dns_lookup_kdc_disabled = false;
++#endif /* HAVE_ADS */
+ 
+ 	if (r->in.debug) {
+ 		LIBNET_JOIN_IN_DUMP_CTX(mem_ctx, r);
+@@ -2950,6 +2954,49 @@ WERROR libnet_Join(TALLOC_CTX *mem_ctx,
+ 		}
+ 	}
+ 
++#ifdef HAVE_ADS
++	/*
++	 * The machine account was just created on r->in.dc_name,
++	 * but might not have replicated to other DCs yet.
++	 * Regenerate the krb5.conf with dns_lookup_kdc = false
++	 * so that the Kerberos library only talks to the DC
++	 * where the account was created. This covers all
++	 * subsequent machine-credential operations:
++	 *   - libnet_join_post_processing_ads_modify() (etype update)
++	 *   - libnet_join_post_verify() (domain membership verification)
++	 */
++	if (r->out.domain_is_ad &&
++	    !(r->in.join_flags & WKSSVC_JOIN_FLAGS_JOIN_UNSECURE) &&
++	    !r->in.request_offline_join)
++	{
++		bool ok;
++		const char *ip = NULL;
++
++		/* dcinfo might not be set for offline joins, however this
++		 * check is redundant since we have a guard:
++		 * !r->in.request_offline_join
++		 */
++		if (r->out.dcinfo) {
++			ip = r->out.dcinfo->dc_address + 2; /* Strip "\\" */
++		}
++
++		if (ip && ip[0] != '\0') {
++			ok = interpret_string_addr(&dc_ss, ip, AI_NUMERICHOST);
++		} else {
++			ok = interpret_string_addr(&dc_ss, r->in.dc_name, 0);
++		}
++
++		if (ok) {
++			create_local_private_krb5_conf_for_domain_join(
++				r->out.dns_domain_name,
++				r->out.netbios_domain_name,
++				NULL, /* sitename */
++				&dc_ss);
++			dns_lookup_kdc_disabled = true;
++		}
++	}
++#endif /* HAVE_ADS */
++
+ 	werr = libnet_join_post_processing(mem_ctx, r);
+ 	if (!W_ERROR_IS_OK(werr)) {
+ 		goto done;
+@@ -2977,7 +3024,18 @@ WERROR libnet_Join(TALLOC_CTX *mem_ctx,
+ 		}
+ 	}
+ 
+- done:
++done:
++#ifdef HAVE_ADS
++	if (dns_lookup_kdc_disabled) {
++		/* Restore dns_lookup_kdc = true for subsequent operations */
++		create_local_private_krb5_conf_for_domain(
++			r->out.dns_domain_name,
++			r->out.netbios_domain_name,
++			NULL, /* sitename */
++			&dc_ss);
++	}
++#endif /* HAVE_ADS */
++
+ 	r->out.result = werr;
+ 
+ 	if (r->in.debug) {
+-- 
+2.47.3
+
