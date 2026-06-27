@@ -2,7 +2,7 @@
 ## (rpmautospec version 0.6.5)
 ## RPMAUTOSPEC: autorelease, autochangelog
 %define autorelease(e:s:pb:n) %{?-p:0.}%{lua:
-    release_number = 16;
+    release_number = 17;
     base_release_number = tonumber(rpm.expand("%{?-b*}%{!?-b:1}"));
     print(release_number + base_release_number - 1);
 }%{?-e:.%{-e*}}%{?-s:.%{-s*}}%{!?-n:%{?dist}}
@@ -271,6 +271,7 @@ Source202:      samba.abignore
 Patch0:        redhat-4.21.patch
 Patch1:	       samba-bug-15999.patch
 Patch2:	       CVE-patches.patch
+Patch3:        bug-15727.patch
 
 Requires(pre): %{name}-common = %{samba_depver}
 Requires: %{name}-common = %{samba_depver}
@@ -4010,6 +4011,9 @@ fi
 %endif
 
 %changelog
+* Mon Jun 15 2026 Jeremy Allison <jallison@ciq.com> - 0:4.21.3-17
+- Fix Samba bug 15727.
+
 * Tue May 26 2026 Jeremy Allison <jallison@ciq.com> - 0:4.21.3-16
 - CVE-2026-4408 fix.
 - CVE-2026-4480 fix.

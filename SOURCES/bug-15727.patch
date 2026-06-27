@@ -1,0 +1,302 @@
+From e639de1da4abe5ed9303c97d83042deb387162f4 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Pavel=20Filipensk=C3=BD?= <pfilipensky@samba.org>
+Date: Thu, 6 Mar 2025 23:20:53 +0100
+Subject: [PATCH 1/4] lib:krb5_wrap: Add smb_krb5_parse_name_flags()
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+BUG: https://bugzilla.samba.org/show_bug.cgi?id=15727
+
+Signed-off-by: Pavel Filipenský <pfilipensky@samba.org>
+Reviewed-by: Stefan Metzmacher <metze@samba.org>
+Reviewed-by: Alexander Bokovoy <ab@samba.org>
+(cherry picked from commit cf34645050df64d6b8c4fa45394c3feebe691e79)
+---
+ lib/krb5_wrap/krb5_samba.c | 39 +++++++++++++++++++++++++++++++-------
+ lib/krb5_wrap/krb5_samba.h |  5 +++++
+ 2 files changed, 37 insertions(+), 7 deletions(-)
+
+diff --git a/lib/krb5_wrap/krb5_samba.c b/lib/krb5_wrap/krb5_samba.c
+index 451616c..0a4a7ea 100644
+--- a/lib/krb5_wrap/krb5_samba.c
++++ b/lib/krb5_wrap/krb5_samba.c
+@@ -836,6 +836,29 @@ krb5_error_code smb_krb5_get_allowed_etypes(krb5_context context,
+ krb5_error_code smb_krb5_parse_name(krb5_context context,
+ 				    const char *name,
+ 				    krb5_principal *principal)
++{
++	return smb_krb5_parse_name_flags(context, name, 0, principal);
++}
++
++/**
++ * @brief Convert a string principal name to a Kerberos principal.
++ *
++ * @param[in]  context  The library context
++ *
++ * @param[in]  name     The principal as a unix charset string.
++ *
++ * @param[in]  flags    Flags for krb5_parse_name_flags()
++ *
++ * @param[out] principal The newly allocated principal.
++ *
++ * Use krb5_free_principal() to free a principal when it is no longer needed.
++ *
++ * @return 0 on success, a Kerberos error code otherwise.
++ */
++krb5_error_code smb_krb5_parse_name_flags(krb5_context context,
++					  const char *name,
++					  int flags,
++					  krb5_principal *principal)
+ {
+ 	krb5_error_code ret;
+ 	char *utf8_name;
+@@ -843,17 +866,19 @@ krb5_error_code smb_krb5_parse_name(krb5_context context,
+ 	TALLOC_CTX *frame = talloc_stackframe();
+ 
+ 	if (!push_utf8_talloc(frame, &utf8_name, name, &converted_size)) {
+-		talloc_free(frame);
++		TALLOC_FREE(frame);
+ 		return ENOMEM;
+ 	}
++	TALLOC_FREE(frame);
+ 
+-	ret = krb5_parse_name(context, utf8_name, principal);
+-	if (ret == KRB5_PARSE_MALFORMED) {
+-		ret = krb5_parse_name_flags(context, utf8_name,
+-					    KRB5_PRINCIPAL_PARSE_ENTERPRISE,
+-					    principal);
++	ret = krb5_parse_name_flags(context, utf8_name, flags, principal);
++	if (ret != KRB5_PARSE_MALFORMED) {
++		return ret;
+ 	}
+-	TALLOC_FREE(frame);
++
++	flags |= KRB5_PRINCIPAL_PARSE_ENTERPRISE;
++	ret = krb5_parse_name_flags(context, utf8_name, flags, principal);
++
+ 	return ret;
+ }
+ 
+diff --git a/lib/krb5_wrap/krb5_samba.h b/lib/krb5_wrap/krb5_samba.h
+index 0acf567..9da8a2b 100644
+--- a/lib/krb5_wrap/krb5_samba.h
++++ b/lib/krb5_wrap/krb5_samba.h
+@@ -186,6 +186,11 @@ krb5_error_code smb_krb5_parse_name(krb5_context context,
+ 				const char *name, /* in unix charset */
+                                 krb5_principal *principal);
+ 
++krb5_error_code smb_krb5_parse_name_flags(krb5_context context,
++					  const char *name, /* unix charset */
++					  int flags,
++					  krb5_principal *principal);
++
+ krb5_error_code smb_krb5_unparse_name(TALLOC_CTX *mem_ctx,
+ 				      krb5_context context,
+ 				      krb5_const_principal principal,
+-- 
+2.52.0
+
+
+From 69c57d32585b28d606bcf6bda240471ee40e6f70 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Pavel=20Filipensk=C3=BD?= <pfilipensky@samba.org>
+Date: Fri, 7 Mar 2025 10:32:40 +0100
+Subject: [PATCH 2/4] s3:libads: Make sure that REALM is always added to keytab
+ principals
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The code responsible for adding SPNs to keytab should always set the
+REALM part.  Current code is not adding it for e.g. SPNs synced from AD.
+
+If REALM is missing, krb5_parse_name() will succeed (and add the REALM)
+only if the krb5.conf contains libdefaults section with
+default_realm set and will fail otherwise. E.g.:
+
+[libdefaults]
+	default_realm = SOMETESTDOMAIN1.MY.COM
+
+When calling 'net ads join' we get the following error if SPN is missing
+REALM and krb5.conf does not provide the default_realm:
+
+pw2kt_process_add_info: Failed to parse principal:
+RestrictedKrbHost/$MACHINE_NAME
+Failed to join domain: failed to create kerberos keytab
+
+BUG: https://bugzilla.samba.org/show_bug.cgi?id=15727
+
+Pair-Programmed-With: Noel Power <noel.power@suse.com>
+
+Signed-off-by: Pavel Filipenský <pfilipensky@samba.org>
+Reviewed-by: Stefan Metzmacher <metze@samba.org>
+Reviewed-by: Alexander Bokovoy <ab@samba.org>
+
+Autobuild-User(master): Pavel Filipensky <pfilipensky@samba.org>
+Autobuild-Date(master): Sun Mar  9 00:25:08 UTC 2025 on atb-devel-224
+
+(cherry picked from commit c72554260c950d0ef7652955a59f0f68a026f4f2)
+---
+ source3/libads/kerberos_keytab.c | 19 ++++++++++++++++++-
+ 1 file changed, 18 insertions(+), 1 deletion(-)
+
+diff --git a/source3/libads/kerberos_keytab.c b/source3/libads/kerberos_keytab.c
+index a549f42..1d4f9c1 100644
+--- a/source3/libads/kerberos_keytab.c
++++ b/source3/libads/kerberos_keytab.c
+@@ -365,12 +365,29 @@ static krb5_error_code pw2kt_process_add_info(struct pw2kt_keytab_state *state2,
+ 	krb5_principal princ = NULL;
+ 	krb5_principal *a = NULL;
+ 	size_t len;
++	const char *realm = NULL;
+ 
+-	ret = smb_krb5_parse_name(state2->context, princs, &princ);
++	ret = smb_krb5_parse_name_flags(state2->context,
++					princs,
++					KRB5_PRINCIPAL_PARSE_NO_DEF_REALM,
++					&princ);
+ 	if (ret != 0) {
+ 		DBG_ERR("Failed to parse principal: %s\n", princs);
+ 		return ret;
+ 	}
++	/* Add realm part if missing (e.g. SPNs synced from DC) */
++	realm = smb_krb5_principal_get_realm(state2, state2->context, princ);
++	if (realm == NULL || *realm == 0) {
++		ret = smb_krb5_principal_set_realm(state2->context,
++						   princ,
++						   lp_realm());
++		if (ret != 0) {
++			DBG_ERR("Failed to add realm to principal: %s\n",
++				princs);
++			return ret;
++		}
++	}
++
+ 	len = talloc_array_length(state2->princ_array);
+ 	a = talloc_realloc(state2,
+ 			   state2->princ_array,
+-- 
+2.52.0
+
+
+From 299d58ac701963198c95238a80663b9a229e5ea3 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Pavel=20Filipensk=C3=BD?= <pfilipensky@samba.org>
+Date: Thu, 6 Mar 2025 15:24:05 +0100
+Subject: [PATCH 3/4] s3:utils: Remove call of ads_startup() from
+ net_ads_keytab_create()
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Calling ads_startup() is not needed in net_ads_keytab_create.  Keytab
+creation code in sync_pw2keytabs() decides if it needs to talk to DC or
+not and connects to AD accordingly.
+
+Fixing this, makes the bug below easier to reproduce using
+'net ads keytab create'.
+
+BUG: https://bugzilla.samba.org/show_bug.cgi?id=15727
+
+Signed-off-by: Pavel Filipenský <pfilipensky@samba.org>
+Reviewed-by: Andreas Schneider <asn@samba.org>
+
+Autobuild-User(master): Pavel Filipensky <pfilipensky@samba.org>
+Autobuild-Date(master): Mon Mar 10 11:09:29 UTC 2025 on atb-devel-224
+
+(cherry picked from commit 5cadaf91bc96cd2a8e0f6bcbd8a212e86b714180)
+---
+ source3/utils/net_ads.c | 11 -----------
+ 1 file changed, 11 deletions(-)
+
+diff --git a/source3/utils/net_ads.c b/source3/utils/net_ads.c
+index 8fdf39f..6ad6eea 100644
+--- a/source3/utils/net_ads.c
++++ b/source3/utils/net_ads.c
+@@ -2941,9 +2941,6 @@ out:
+ 
+ static int net_ads_keytab_create(struct net_context *c, int argc, const char **argv)
+ {
+-	TALLOC_CTX *tmp_ctx = talloc_stackframe();
+-	ADS_STRUCT *ads = NULL;
+-	ADS_STATUS status;
+ 	NTSTATUS ntstatus;
+ 	int ret = -1;
+ 
+@@ -2953,7 +2950,6 @@ static int net_ads_keytab_create(struct net_context *c, int argc, const char **a
+ 			   "    %s\n",
+ 			 _("Usage:"),
+ 			 _("Create (sync) new default keytab"));
+-		TALLOC_FREE(tmp_ctx);
+ 		return -1;
+ 	}
+ 
+@@ -2963,15 +2959,8 @@ static int net_ads_keytab_create(struct net_context *c, int argc, const char **a
+ 		net_use_krb_machine_account(c);
+ 	}
+ 
+-	status = ads_startup(c, true, tmp_ctx, &ads);
+-	if (!ADS_ERR_OK(status)) {
+-		goto out;
+-	}
+-
+ 	ntstatus = sync_pw2keytabs(c->opt_host);
+ 	ret = NT_STATUS_IS_OK(ntstatus) ? 0 : 1;
+-out:
+-	TALLOC_FREE(tmp_ctx);
+ 	return ret;
+ }
+ 
+-- 
+2.52.0
+
+
+From 643798e8304c269b44223b2a86037a11130b286b Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Pavel=20Filipensk=C3=BD?= <pfilipensky@samba.org>
+Date: Wed, 23 Apr 2025 09:34:14 +0200
+Subject: [PATCH 4/4] lib/krb5_wrap: Fix placement of TALLOC_FREE(frame)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+BUG: https://bugzilla.samba.org/show_bug.cgi?id=15727
+
+Signed-off-by: Pavel Filipenský <pfilipensky@samba.org>
+Reviewed-by: Stefan Metzmacher <metze@samba.org>
+
+Autobuild-User(master): Stefan Metzmacher <metze@samba.org>
+Autobuild-Date(master): Wed Apr 23 12:14:17 UTC 2025 on atb-devel-224
+
+(cherry picked from commit b5bd36dfd7dfd9a09a3f9378330df3be9db4551f)
+
+Autobuild-User(v4-21-test): Jule Anger <janger@samba.org>
+Autobuild-Date(v4-21-test): Wed Apr 30 16:42:48 UTC 2025 on atb-devel-224
+---
+ lib/krb5_wrap/krb5_samba.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/lib/krb5_wrap/krb5_samba.c b/lib/krb5_wrap/krb5_samba.c
+index 0a4a7ea..f9d91a4 100644
+--- a/lib/krb5_wrap/krb5_samba.c
++++ b/lib/krb5_wrap/krb5_samba.c
+@@ -869,16 +869,17 @@ krb5_error_code smb_krb5_parse_name_flags(krb5_context context,
+ 		TALLOC_FREE(frame);
+ 		return ENOMEM;
+ 	}
+-	TALLOC_FREE(frame);
+ 
+ 	ret = krb5_parse_name_flags(context, utf8_name, flags, principal);
+ 	if (ret != KRB5_PARSE_MALFORMED) {
++		TALLOC_FREE(frame);
+ 		return ret;
+ 	}
+ 
+ 	flags |= KRB5_PRINCIPAL_PARSE_ENTERPRISE;
+ 	ret = krb5_parse_name_flags(context, utf8_name, flags, principal);
+ 
++	TALLOC_FREE(frame);
+ 	return ret;
+ }
+ 
+-- 
+2.52.0
+
