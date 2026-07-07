@@ -1,0 +1,482 @@
+From 918b27026bbc9bb57ebc2b824243cd0676bb9cbe Mon Sep 17 00:00:00 2001
+From: Andreas Schneider <asn@samba.org>
+Date: Wed, 6 Aug 2025 14:40:34 +0200
+Subject: [PATCH 1/9] auth:creds: Allow to reset the realm by passing NULL
+
+This is e.g. done by cli_credentials_set_anonymous().
+
+We can't call TALLOC_FREE(cred->realm), as this would break
+cli_credentials_shallow_copy().
+
+BUG: https://bugzilla.samba.org/show_bug.cgi?id=15893
+
+Signed-off-by: Andreas Schneider <asn@samba.org>
+Reviewed-by: Alexander Bokovoy <ab@samba.org>
+(cherry picked from commit e5608cdb2e5a7ef2641ec0e7b0ce0b4640a02ce1)
+---
+ auth/credentials/credentials.c | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/auth/credentials/credentials.c b/auth/credentials/credentials.c
+index aade70c..05d87c6 100644
+--- a/auth/credentials/credentials.c
++++ b/auth/credentials/credentials.c
+@@ -933,7 +933,14 @@ _PUBLIC_ bool cli_credentials_set_realm(struct cli_credentials *cred,
+ 			       enum credentials_obtained obtained)
+ {
+ 	if (obtained >= cred->realm_obtained) {
+-		cred->realm = strupper_talloc(cred, val);
++		/* If `val = NULL` is passed, realm is reset */
++		cred->realm = NULL;
++		if (val != NULL) {
++			cred->realm = strupper_talloc(cred, val);
++			if (cred->realm == NULL) {
++				return false;
++			}
++		}
+ 		cred->realm_obtained = obtained;
+ 		cli_credentials_invalidate_ccache(cred, cred->realm_obtained);
+ 		return true;
+-- 
+2.52.0
+
+
+From 734ee859ac39f32c9791e2780aa55bd75bfa88cf Mon Sep 17 00:00:00 2001
+From: Andreas Schneider <asn@samba.org>
+Date: Thu, 7 Aug 2025 13:32:47 +0200
+Subject: [PATCH 2/9] auth:creds: Also uppercase realm set via a callback
+
+BUG: https://bugzilla.samba.org/show_bug.cgi?id=15893
+
+Signed-off-by: Andreas Schneider <asn@samba.org>
+Reviewed-by: Alexander Bokovoy <ab@samba.org>
+(cherry picked from commit 4f8ff3a567d6318c71b0960345592224721c9594)
+---
+ auth/credentials/credentials.c | 13 ++++++++++++-
+ 1 file changed, 12 insertions(+), 1 deletion(-)
+
+diff --git a/auth/credentials/credentials.c b/auth/credentials/credentials.c
+index 05d87c6..6467965 100644
+--- a/auth/credentials/credentials.c
++++ b/auth/credentials/credentials.c
+@@ -912,9 +912,20 @@ _PUBLIC_ const char *cli_credentials_get_realm(struct cli_credentials *cred)
+ 
+ 	if (cred->realm_obtained == CRED_CALLBACK &&
+ 	    !cred->callback_running) {
++		const char *realm = NULL;
++
+ 	    	cred->callback_running = true;
+-		cred->realm = cred->realm_cb(cred);
++		realm = cred->realm_cb(cred);
+ 	    	cred->callback_running = false;
++
++		cred->realm = NULL;
++		if (realm != NULL) {
++			cred->realm = strupper_talloc(cred, realm);
++			if (cred->realm == NULL) {
++				return NULL;
++			}
++		}
++
+ 		if (cred->realm_obtained == CRED_CALLBACK) {
+ 			cred->realm_obtained = CRED_CALLBACK_RESULT;
+ 			cli_credentials_invalidate_ccache(cred, cred->realm_obtained);
+-- 
+2.52.0
+
+
+From dff378ad885cea303c2b5522462bc951d2b4122b Mon Sep 17 00:00:00 2001
+From: Andreas Schneider <asn@samba.org>
+Date: Wed, 6 Aug 2025 14:42:51 +0200
+Subject: [PATCH 3/9] auth:creds: Allow to reset the principal by passing NULL
+ to set_principal
+
+We do that e.g. in cli_credentials_set_anonymous()
+
+BUG: https://bugzilla.samba.org/show_bug.cgi?id=15893
+
+Signed-off-by: Andreas Schneider <asn@samba.org>
+Reviewed-by: Alexander Bokovoy <ab@samba.org>
+(cherry picked from commit 67c2feba290764c62ab01602d5bc9d4d122c2c12)
+---
+ auth/credentials/credentials.c | 15 ++++++++++-----
+ 1 file changed, 10 insertions(+), 5 deletions(-)
+
+diff --git a/auth/credentials/credentials.c b/auth/credentials/credentials.c
+index 6467965..c9bf376 100644
+--- a/auth/credentials/credentials.c
++++ b/auth/credentials/credentials.c
+@@ -432,12 +432,15 @@ _PUBLIC_ bool cli_credentials_set_principal(struct cli_credentials *cred,
+ 				   enum credentials_obtained obtained)
+ {
+ 	if (obtained >= cred->principal_obtained) {
+-		cred->principal = talloc_strdup(cred, val);
+-		if (cred->principal == NULL) {
+-			return false;
++		/* If `val = NULL` is passed, principal is reset */
++		cred->principal = NULL;
++		if (val != NULL) {
++			cred->principal = talloc_strdup(cred, val);
++			if (cred->principal == NULL) {
++				return false;
++			}
+ 		}
+ 		cred->principal_obtained = obtained;
+-
+ 		cli_credentials_invalidate_ccache(cred, cred->principal_obtained);
+ 		return true;
+ 	}
+@@ -1546,7 +1549,9 @@ _PUBLIC_ void cli_credentials_get_ntlm_username_domain(struct cli_credentials *c
+ 					      const char **username,
+ 					      const char **domain)
+ {
+-	if (cred->principal_obtained >= cred->username_obtained) {
++	if (!cli_credentials_is_anonymous(cred) &&
++	    cred->principal_obtained >= cred->username_obtained)
++	{
+ 		*domain = talloc_strdup(mem_ctx, "");
+ 		*username = cli_credentials_get_principal(cred, mem_ctx);
+ 	} else {
+-- 
+2.52.0
+
+
+From 7d9cf4a71b25bec30be85ed6ab93f242792c178f Mon Sep 17 00:00:00 2001
+From: Andreas Schneider <asn@samba.org>
+Date: Thu, 7 Aug 2025 13:45:48 +0200
+Subject: [PATCH 4/9] auth:creds: Keep the password secret
+
+BUG: https://bugzilla.samba.org/show_bug.cgi?id=15893
+
+Signed-off-by: Andreas Schneider <asn@samba.org>
+Reviewed-by: Alexander Bokovoy <ab@samba.org>
+(cherry picked from commit 705db6c8b295f65f40b7dcd0d5dc0f6db901c8d7)
+---
+ auth/credentials/credentials.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/auth/credentials/credentials.c b/auth/credentials/credentials.c
+index c9bf376..5bab89d 100644
+--- a/auth/credentials/credentials.c
++++ b/auth/credentials/credentials.c
+@@ -626,6 +626,7 @@ _PUBLIC_ bool cli_credentials_set_password(struct cli_credentials *cred,
+ 		if (cred->password == NULL) {
+ 			return false;
+ 		}
++		talloc_keep_secret(discard_const(cred->password));
+ 
+ 		/* Don't print the actual password in talloc memory dumps */
+ 		talloc_set_name_const(cred->password,
+-- 
+2.52.0
+
+
+From dfa709438bd3389e6f07685fc45db4d500212fd5 Mon Sep 17 00:00:00 2001
+From: Andreas Schneider <asn@samba.org>
+Date: Thu, 7 Aug 2025 13:48:04 +0200
+Subject: [PATCH 5/9] auth:creds: Keep password secret in
+ cmdline_get_userpassword()
+
+BUG: https://bugzilla.samba.org/show_bug.cgi?id=15893
+
+Signed-off-by: Andreas Schneider <asn@samba.org>
+Reviewed-by: Alexander Bokovoy <ab@samba.org>
+(cherry picked from commit 34482f4ad014a09c84b484097a8d03dfec4f6512)
+---
+ auth/credentials/credentials_cmdline.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/auth/credentials/credentials_cmdline.c b/auth/credentials/credentials_cmdline.c
+index c8c7c18..e9cdc80 100644
+--- a/auth/credentials/credentials_cmdline.c
++++ b/auth/credentials/credentials_cmdline.c
+@@ -46,6 +46,7 @@ static const char *cmdline_get_userpassword(struct cli_credentials *creds)
+ 		goto fail;
+ 	}
+ 	talloc_set_name_const(ret, __location__);
++	talloc_keep_secret(ret);
+ fail:
+ 	ZERO_STRUCT(pwd);
+ 	TALLOC_FREE(frame);
+-- 
+2.52.0
+
+
+From 91ee1d1b8232f7dc79af6e6b5707c1a43f8e63b5 Mon Sep 17 00:00:00 2001
+From: Andreas Schneider <asn@samba.org>
+Date: Thu, 7 Aug 2025 13:48:26 +0200
+Subject: [PATCH 6/9] s3:utils: Keep password secret in ntlm_auth
+ get_password()
+
+BUG: https://bugzilla.samba.org/show_bug.cgi?id=15893
+
+Signed-off-by: Andreas Schneider <asn@samba.org>
+Reviewed-by: Alexander Bokovoy <ab@samba.org>
+(cherry picked from commit f86739e3abd63ba0b7ba632d796968fec9fa2f8f)
+---
+ source3/utils/ntlm_auth.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/source3/utils/ntlm_auth.c b/source3/utils/ntlm_auth.c
+index df1484e..2032459 100644
+--- a/source3/utils/ntlm_auth.c
++++ b/source3/utils/ntlm_auth.c
+@@ -254,6 +254,7 @@ static const char *get_password(struct cli_credentials *credentials)
+ 
+ 	manage_squid_request(NUM_HELPER_MODES /* bogus */, NULL, state, manage_gensec_get_pw_request, (void **)&password);
+ 	talloc_steal(credentials, password);
++	talloc_keep_secret(password);
+ 	TALLOC_FREE(frame);
+ 	return password;
+ }
+-- 
+2.52.0
+
+
+From 36d9932dd446f05e19ee3fed3812ca505632f80c Mon Sep 17 00:00:00 2001
+From: Andreas Schneider <asn@samba.org>
+Date: Tue, 5 Aug 2025 15:25:54 +0200
+Subject: [PATCH 7/9] auth:creds: Validate realm names in set_realm and
+ set_principal
+
+See also
+https://web.mit.edu/kerberos/krb5-latest/doc/admin/realm_config.html#realm-name
+
+BUG: https://bugzilla.samba.org/show_bug.cgi?id=15893
+
+Signed-off-by: Andreas Schneider <asn@samba.org>
+Reviewed-by: Alexander Bokovoy <ab@samba.org>
+(cherry picked from commit e848671f34f969634d55eb7b846d70e6334034ae)
+---
+ auth/credentials/credentials.c | 25 +++++++++++++++++++++++++
+ 1 file changed, 25 insertions(+)
+
+diff --git a/auth/credentials/credentials.c b/auth/credentials/credentials.c
+index 5bab89d..e897b85 100644
+--- a/auth/credentials/credentials.c
++++ b/auth/credentials/credentials.c
+@@ -33,6 +33,18 @@
+ #include "system/filesys.h"
+ #include "system/passwd.h"
+ 
++static bool str_is_ascii(const char *s) {
++	if (s != NULL) {
++		for (; s[0] != '\0'; s++) {
++			if (!isascii(s[0])) {
++				return false;
++			}
++		}
++	}
++
++	return true;
++}
++
+ /**
+  * Create a new credentials structure
+  * @param mem_ctx TALLOC_CTX parent for credentials structure
+@@ -435,6 +447,14 @@ _PUBLIC_ bool cli_credentials_set_principal(struct cli_credentials *cred,
+ 		/* If `val = NULL` is passed, principal is reset */
+ 		cred->principal = NULL;
+ 		if (val != NULL) {
++			char *p = strchr(val, '@');
++			if (p != NULL) {
++				/* For realm names, only ASCII is allowed */
++				if (!str_is_ascii(p + 1)) {
++					return false;
++				}
++			}
++
+ 			cred->principal = talloc_strdup(cred, val);
+ 			if (cred->principal == NULL) {
+ 				return false;
+@@ -951,6 +971,11 @@ _PUBLIC_ bool cli_credentials_set_realm(struct cli_credentials *cred,
+ 		/* If `val = NULL` is passed, realm is reset */
+ 		cred->realm = NULL;
+ 		if (val != NULL) {
++			/* For realm names, only ASCII is allowed */
++			if (!str_is_ascii(val)) {
++				return false;
++			}
++
+ 			cred->realm = strupper_talloc(cred, val);
+ 			if (cred->realm == NULL) {
+ 				return false;
+-- 
+2.52.0
+
+
+From d370e4eda4bc15b3e62e6168f5898341f23f4fbc Mon Sep 17 00:00:00 2001
+From: Andreas Schneider <asn@samba.org>
+Date: Wed, 6 Aug 2025 16:33:21 +0200
+Subject: [PATCH 8/9] auth:creds: Make sure to uppercase the realm of a
+ principal
+
+BUG: https://bugzilla.samba.org/show_bug.cgi?id=15893
+
+Signed-off-by: Andreas Schneider <asn@samba.org>
+Reviewed-by: Alexander Bokovoy <ab@samba.org>
+(cherry picked from commit 5879410caf9303a378f3d90365e60928a735e65a)
+---
+ auth/credentials/credentials.c    | 33 ++++++++++++++++++++++++++++++-
+ python/samba/tests/credentials.py |  4 ++--
+ 2 files changed, 34 insertions(+), 3 deletions(-)
+
+diff --git a/auth/credentials/credentials.c b/auth/credentials/credentials.c
+index e897b85..a0c8906 100644
+--- a/auth/credentials/credentials.c
++++ b/auth/credentials/credentials.c
+@@ -379,9 +379,31 @@ _PUBLIC_ char *cli_credentials_get_principal_and_obtained(struct cli_credentials
+ 
+ 	if (cred->principal_obtained == CRED_CALLBACK &&
+ 	    !cred->callback_running) {
++		const char *princ = NULL;
++
+ 	    	cred->callback_running = true;
+-		cred->principal = cred->principal_cb(cred);
++		princ = cred->principal_cb(cred);
+ 	    	cred->callback_running = false;
++
++		cred->principal = NULL;
++		if (princ != NULL) {
++			char *p = NULL;
++
++			cred->principal = talloc_strdup(cred, princ);
++			if (cred->principal == NULL) {
++				return NULL;
++			}
++
++			p = strchr(cred->principal, '@');
++			if (p != NULL) {
++				p += 1;
++
++				for (; p[0] != '\0'; p++) {
++					*p = toupper(p[0]);
++				}
++			}
++		}
++
+ 		if (cred->principal_obtained == CRED_CALLBACK) {
+ 			cred->principal_obtained = CRED_CALLBACK_RESULT;
+ 			cli_credentials_invalidate_ccache(cred, cred->principal_obtained);
+@@ -459,6 +481,15 @@ _PUBLIC_ bool cli_credentials_set_principal(struct cli_credentials *cred,
+ 			if (cred->principal == NULL) {
+ 				return false;
+ 			}
++
++			p = strchr(cred->principal, '@');
++			if (p != NULL) {
++				p += 1;
++
++				for (; p[0] != '\0'; p++) {
++					*p = toupper(p[0]);
++				}
++			}
+ 		}
+ 		cred->principal_obtained = obtained;
+ 		cli_credentials_invalidate_ccache(cred, cred->principal_obtained);
+diff --git a/python/samba/tests/credentials.py b/python/samba/tests/credentials.py
+index f9781f8..6a6e11a 100644
+--- a/python/samba/tests/credentials.py
++++ b/python/samba/tests/credentials.py
+@@ -361,7 +361,7 @@ class CredentialsTests(samba.tests.TestCaseInTempDir):
+         self.assertEqual(creds.get_username(), "env_user")
+         self.assertEqual(creds.get_domain(), lp.get("workgroup").upper())
+         self.assertEqual(creds.get_realm(), realm.upper())
+-        self.assertEqual(creds.get_principal(), "unknown@realm.example.com")
++        self.assertEqual(creds.get_principal(), "unknown@REALM.EXAMPLE.COM")
+         creds.parse_string("domain\\user")
+         self.assertEqual(creds.get_username(), "user")
+         self.assertEqual(creds.get_domain(), "DOMAIN")
+@@ -385,7 +385,7 @@ class CredentialsTests(samba.tests.TestCaseInTempDir):
+         self.assertEqual(creds.get_username(), "env_user")
+         self.assertEqual(creds.get_domain(), lp.get("workgroup").upper())
+         self.assertEqual(creds.get_realm(), realm.upper())
+-        self.assertEqual(creds.get_principal(), "unknown@realm.example.com")
++        self.assertEqual(creds.get_principal(), "unknown@REALM.EXAMPLE.COM")
+         creds.parse_string("domain\\user")
+         self.assertEqual(creds.get_username(), "user")
+         self.assertEqual(creds.get_domain(), "DOMAIN")
+-- 
+2.52.0
+
+
+From c6c069abd70c58179a21ca4389ef7ed4464d624e Mon Sep 17 00:00:00 2001
+From: Andreas Schneider <asn@samba.org>
+Date: Wed, 6 Aug 2025 07:54:52 +0200
+Subject: [PATCH 9/9] auth:creds: Update the documentation for set_principal
+ and set_realm
+
+BUG: https://bugzilla.samba.org/show_bug.cgi?id=15893
+
+Signed-off-by: Andreas Schneider <asn@samba.org>
+Reviewed-by: Alexander Bokovoy <ab@samba.org>
+
+Autobuild-User(master): Alexander Bokovoy <ab@samba.org>
+Autobuild-Date(master): Mon Aug 25 12:08:22 UTC 2025 on atb-devel-224
+
+(cherry picked from commit 7a19fde92605a3a3699998fb226e3e787de0b5ca)
+---
+ auth/credentials/credentials.c | 37 ++++++++++++++++++++++++++++------
+ 1 file changed, 31 insertions(+), 6 deletions(-)
+
+diff --git a/auth/credentials/credentials.c b/auth/credentials/credentials.c
+index a0c8906..4146ae2 100644
+--- a/auth/credentials/credentials.c
++++ b/auth/credentials/credentials.c
+@@ -461,9 +461,24 @@ _PUBLIC_ char *cli_credentials_get_principal(struct cli_credentials *cred, TALLO
+ 	return cli_credentials_get_principal_and_obtained(cred, mem_ctx, &obtained);
+ }
+ 
++/**
++ * @brief Set the principal for the credentials context.
++ *
++ * The realm of the principal will be checked if it is ASCII only and upper
++ * cased if it isn't yet.
++ *
++ * @param cred The credential context.
++ *
++ * @param val  The principal to set or NULL to reset.
++ *
++ * @param obtained            This way the described principal was specified.
++ *
++ * @return true on success, false if the realm is not ASCII or the allocation
++ * failed.
++ */
+ _PUBLIC_ bool cli_credentials_set_principal(struct cli_credentials *cred,
+-				   const char *val,
+-				   enum credentials_obtained obtained)
++					    const char *val,
++					    enum credentials_obtained obtained)
+ {
+ 	if (obtained >= cred->principal_obtained) {
+ 		/* If `val = NULL` is passed, principal is reset */
+@@ -991,12 +1006,22 @@ _PUBLIC_ const char *cli_credentials_get_realm(struct cli_credentials *cred)
+ }
+ 
+ /**
+- * Set the realm for this credentials context, and force it to
+- * uppercase for the sanity of our local kerberos libraries
++ * @brief Set the realm for this credentials context.
++ *
++ * The realm be checked if it is ASCII only and upper cased if it isn't yet.
++ *
++ * @param cred The credential context.
++ *
++ * @param val  The realm to set or NULL to reset.
++ *
++ * @param obtained            This way the described realm was specified.
++ *
++ * @return true on success, false if the realm is not ASCII or the allocation
++ * failed.
+  */
+ _PUBLIC_ bool cli_credentials_set_realm(struct cli_credentials *cred,
+-			       const char *val,
+-			       enum credentials_obtained obtained)
++					const char *val,
++					enum credentials_obtained obtained)
+ {
+ 	if (obtained >= cred->realm_obtained) {
+ 		/* If `val = NULL` is passed, realm is reset */
+-- 
+2.52.0
+
