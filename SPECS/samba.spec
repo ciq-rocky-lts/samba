@@ -132,7 +132,7 @@
 
 %define samba_requires_eq()  %(LC_ALL="C" echo '%*' | xargs -r rpm -q --qf 'Requires: %%{name} = %%{epoch}:%%{version}\\n' | sed -e 's/ (none):/ /' -e 's/ 0:/ /' | grep -v "is not")
 
-%global baserelease 16
+%global baserelease 17
 
 %global samba_version 4.15.5
 %global talloc_version 2.3.3
@@ -226,6 +226,7 @@ Patch20:        06-CVE-2023-34966.patch
 Patch21:        07-CVE-2023-34967.patch
 Patch22:        08-CVE-2023-34968.patch
 Patch23:        09-CVE-2022-38023.patch
+Patch30:        CVE-patches.patch
 
 Requires(pre): /usr/sbin/groupadd
 Requires(post): systemd
@@ -4123,6 +4124,13 @@ fi
 %endif
 
 %changelog
+* Fri May 29 2026 Jeremy Allison <jallison@ciq.com> - 4.15.5-17
+- CVE-2026-4408 fix.
+- CVE-2026-4480 fix.
+- CVE-2026-3238 fix.
+- CVE-2026-3012 fix.
+- CVE-2026-2340 fix.
+
 * Fri Mar 29 2024 Matt Hink <mhink@ciq.com> - 4.15.5-16
 - Fix CVE-2022-38023
 
